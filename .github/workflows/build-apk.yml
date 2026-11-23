@@ -31,14 +31,28 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: Set up Android SDK
+      - name: Set up Android SDK (API 36.1)
         uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools build-tools;36.0.0 platforms;android-36.1
 
-      - name: Accept Android SDK licenses
+      - name: Ensure Android SDK 36.1 & licenses are ready
         run: |
           SDK_DIR="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
           mkdir -p "$SDK_DIR/licenses"
-          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          printf "\n24333f8a63b6825ea9c5514f83c2829b004d1fee\n8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e" > "$SDK_DIR/licenses/android-sdk-license"
+          printf "\n84831b9409646a918e30573bab4c9c91346d8abd" > "$SDK_DIR/licenses/android-sdk-preview-license"
+          SDKMANAGER_BIN="$SDK_DIR/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER_BIN" ]; then
+            SDKMANAGER_BIN="$(command -v sdkmanager || true)"
+          fi
+          if [ -n "$SDKMANAGER_BIN" ]; then
+            yes | "$SDKMANAGER_BIN" --sdk_root="$SDK_DIR" --licenses >/dev/null 2>&1 || true
+            if [ ! -d "$SDK_DIR/platforms/android-36.1" ]; then
+              yes | "$SDKMANAGER_BIN" --sdk_root="$SDK_DIR" "platform-tools" "build-tools;36.0.0" "platforms;android-36.1"
+            fi
+          fi
+          ls -la "$SDK_DIR/platforms" "$SDK_DIR/build-tools"
 
       - name: Set up Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
@@ -57,7 +71,9 @@ jobs:
           fi
 
       - name: Build Debug APK
-        run: gradle :app:assembleDebug --no-daemon --stacktrace
+        run: |
+          gradle --version
+          gradle :app:assembleDebug --no-daemon --stacktrace --console=plain
 
       - name: Upload Debug APK Artifact
         uses: actions/upload-artifact@v4
@@ -87,7 +103,7 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           echo "$RELEASE_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > my-upload-key.jks
-          gradle :app:assembleRelease :app:bundleRelease --no-daemon --stacktrace
+          gradle :app:assembleRelease :app:bundleRelease --no-daemon --stacktrace --console=plain
 
       - name: Upload Release APK & AAB Artifacts
         if: steps.check_release.outputs.has_release == 'true'
