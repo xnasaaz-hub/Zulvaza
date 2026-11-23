@@ -1,0 +1,19 @@
+{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appID": "TEAM_ID.com.zulvaza.seller",
+        "paths": [
+          "/seller/login",
+          "/seller/signup",
+          "/dashboard",
+          "/products",
+          "/products/*",
+          "/store",
+          "/onboarding"
+        ]
+      }
+    ]
+  }
+}

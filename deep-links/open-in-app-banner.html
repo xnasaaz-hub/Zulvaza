@@ -1,0 +1,50 @@
+<!-- ZULVAZA Seller Center: Sticky "Open in App" Mobile Banner Snippet -->
+<div id="zulvaza-app-banner" style="display:none;position:fixed;bottom:0;left:0;right:0;z-index:9999;background:#0F1F4B;color:#fff;padding:12px 16px;font-family:'Inter Tight',sans-serif;box-shadow:0 -4px 16px rgba(0,0,0,0.18);align-items:center;justify-content:space-between;gap:12px;">
+  <div style="display:flex;align-items:center;gap:10px;min-width:0;">
+    <img src="/seller-mark.png" alt="ZULVAZA Seller" style="width:36px;height:36px;border-radius:10px;background:#F97316;padding:4px;" />
+    <div style="min-width:0;">
+      <div style="font-weight:700;font-size:14px;">ZULVAZA Seller App</div>
+      <div style="font-size:12px;opacity:0.8;">Faster product uploads &amp; live CNIC capture</div>
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+    <button id="zulvaza-open-app-btn" style="background:#F97316;color:#fff;border:none;border-radius:10px;padding:9px 14px;font-weight:700;font-size:13px;cursor:pointer;">Open</button>
+    <button id="zulvaza-stay-web-btn" style="background:transparent;color:#cbd5e1;border:1px solid rgba(255,255,255,0.25);border-radius:10px;padding:8px 10px;font-size:12px;cursor:pointer;">Browser</button>
+  </div>
+</div>
+
+<script>
+(function () {
+  var DISMISS_KEY = 'zulvaza_seller_stay_in_browser_until';
+  var now = Date.now();
+  if (Number(localStorage.getItem(DISMISS_KEY) || 0) > now) return;
+
+  var ua = navigator.userAgent || '';
+  var isAndroid = /Android/i.test(ua);
+  var isIOS = /iPhone|iPad|iPod/i.test(ua);
+  if (!isAndroid && !isIOS) return;
+
+  var banner = document.getElementById('zulvaza-app-banner');
+  banner.style.display = 'flex';
+
+  document.getElementById('zulvaza-stay-web-btn').onclick = function () {
+    localStorage.setItem(DISMISS_KEY, String(Date.now() + 7 * 24 * 60 * 60 * 1000));
+    banner.style.display = 'none';
+  };
+
+  document.getElementById('zulvaza-open-app-btn').onclick = function () {
+    var path = (window.location.pathname || '/dashboard').replace(/^\/+/, '');
+    if (isAndroid) {
+      var fallback = encodeURIComponent(window.location.href);
+      window.location.href = 'intent://' + path + '#Intent;scheme=zulvazaseller;package=com.aistudio.zulvazaseller.zkpk;S.browser_fallback_url=' + fallback + ';end';
+    } else if (isIOS) {
+      window.location.href = 'zulvazaseller://' + path;
+      setTimeout(function () {
+        if (!document.hidden) {
+          // App not installed — stay on web or redirect to App Store
+        }
+      }, 1500);
+    }
+  };
+})();
+</script>

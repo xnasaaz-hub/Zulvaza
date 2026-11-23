@@ -1,0 +1,9 @@
+{
+  "name": "ZULVAZA Seller Center",
+  "description": "Mobile Seller Center for ZULVAZA Pakistan — manage products, store profile, CNIC identity verification, and sales analytics.",
+  "requestFramePermissions": [
+    "CAMERA",
+    "ACCESS_FINE_LOCATION"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
