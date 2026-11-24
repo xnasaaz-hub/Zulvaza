@@ -8,6 +8,15 @@ data class CnicMatchValidationResult(
     val mismatches: List<String> = emptyList()
 )
 
+data class ExtractedCnicDetails(
+    val fullName: String = "",
+    val cnicDigits: String = "",
+    val dateOfBirth: String = "",
+    val issueDate: String = "",
+    val expiryDate: String = "",
+    val gender: String = "male"
+)
+
 object CnicMatchValidator {
 
     private val FRONT_KEYWORDS = setOf(
@@ -20,6 +29,14 @@ object CnicMatchValidator {
         "REGISTRAR", "GENERAL", "PAKISTAN", "CURRENT", "PERMANENT",
         "ADDRESS", "SIGNATURE", "HOLDER", "IDENTITY", "CARD", "GOVT",
         "ISSUING", "AUTHORITY", "NADRA", "LOST", "POST"
+    )
+
+    private val NON_NAME_WORDS = setOf(
+        "PAKISTAN", "ISLAMIC", "REPUBLIC", "NATIONAL", "IDENTITY", "CARD",
+        "NAME", "FATHER", "HUSBAND", "GENDER", "COUNTRY", "STAY", "BIRTH",
+        "DATE", "ISSUE", "EXPIRY", "NICOP", "NADRA", "GOVT", "HOLDER",
+        "SIGNATURE", "REGISTRAR", "GENERAL", "NUMBER", "MALE", "FEMALE",
+        "PAK", "OF", "THE", "LIFETIME"
     )
 
     private val CNIC_REGEX = Regex("\\b(\\d{5})[-\\s]?(\\d{7})[-\\s]?(\\d)\\b")
@@ -69,6 +86,126 @@ object CnicMatchValidator {
         return found.toList()
     }
 
+    fun extractCnicDetails(frontText: String, backText: String): ExtractedCnicDetails {
+        val combined = listOf(frontText, backText).filter { it.isNotBlank() }.joinToString("\n")
+        val cnicDigits = extractCnicDigits(combined).orEmpty()
+
+        // Sort dates chronologically; typical Pakistan CNIC carries [DOB, Issue, Expiry]
+        val sortedDates = extractIsoDates(frontText.ifBlank { combined }).distinct().sorted()
+        val dob: String
+        val issueDate: String
+        val expiryDate: String
+        when {
+            sortedDates.size >= 3 -> {
+                dob = sortedDates.first()
+                issueDate = sortedDates[1]
+                expiryDate = sortedDates.last()
+            }
+            sortedDates.size == 2 -> {
+                val firstYear = sortedDates[0].take(4).toIntOrNull() ?: 2000
+                if (firstYear <= 2008) {
+                    dob = sortedDates[0]
+                    issueDate = sortedDates[1]
+                    expiryDate = ""
+                } else {
+                    dob = ""
+                    issueDate = sortedDates[0]
+                    expiryDate = sortedDates[1]
+                }
+            }
+            sortedDates.size == 1 -> {
+                val yr = sortedDates[0].take(4).toIntOrNull() ?: 2000
+                if (yr <= 2008) {
+                    dob = sortedDates[0]
+                    issueDate = ""
+                    expiryDate = ""
+                } else {
+                    dob = ""
+                    issueDate = sortedDates[0]
+                    expiryDate = ""
+                }
+            }
+            else -> {
+                dob = ""
+                issueDate = ""
+                expiryDate = ""
+            }
+        }
+
+        val gender = detectGenderFromOcr(combined, cnicDigits)
+        val fullName = extractNameFromOcr(frontText.ifBlank { combined })
+
+        return ExtractedCnicDetails(
+            fullName = fullName,
+            cnicDigits = cnicDigits,
+            dateOfBirth = dob,
+            issueDate = issueDate,
+            expiryDate = expiryDate,
+            gender = gender
+        )
+    }
+
+    private fun detectGenderFromOcr(rawText: String, cnicDigits: String): String {
+        val upper = rawText.uppercase(Locale.US)
+        return when {
+            Regex("\\bFEMALE\\b").containsMatchIn(upper) ||
+                Regex("GENDER\\s*[:\\-]?\\s*F\\b").containsMatchIn(upper) ||
+                upper.contains("W/O") ||
+                upper.contains("D/O") -> "female"
+            Regex("\\bMALE\\b").containsMatchIn(upper) ||
+                Regex("GENDER\\s*[:\\-]?\\s*M\\b").containsMatchIn(upper) ||
+                upper.contains("S/O") -> "male"
+            cnicDigits.length == 13 -> {
+                val lastDigit = cnicDigits.last().digitToIntOrNull()
+                if (lastDigit != null && lastDigit % 2 == 0) "female" else "male"
+            }
+            else -> "male"
+        }
+    }
+
+    private fun extractNameFromOcr(frontText: String): String {
+        val lines = frontText.lines().map { it.trim() }.filter { it.isNotBlank() }
+        for (i in lines.indices) {
+            val line = lines[i]
+            val upper = line.uppercase(Locale.US)
+            if (upper.startsWith("NAME")) {
+                val inline = line.substringAfter(':', "").trim()
+                if (inline.length >= 3 && isLikelyPersonName(inline)) {
+                    return formatDisplayName(inline)
+                }
+                val afterWord = line.replace(Regex("(?i)^name\\b[:\\s-]*"), "").trim()
+                if (afterWord.length >= 3 && isLikelyPersonName(afterWord)) {
+                    return formatDisplayName(afterWord)
+                }
+                val nextLine = lines.getOrNull(i + 1).orEmpty()
+                if (isLikelyPersonName(nextLine)) {
+                    return formatDisplayName(nextLine)
+                }
+            }
+        }
+        return ""
+    }
+
+    private fun isLikelyPersonName(candidate: String): Boolean {
+        if (candidate.any { it.isDigit() }) return false
+        val words = candidate.uppercase(Locale.US)
+            .split(Regex("[^A-Z]+"))
+            .filter { it.length >= 2 }
+        if (words.isEmpty() || words.size > 5) return false
+        return words.any { it !in NON_NAME_WORDS }
+    }
+
+    private fun formatDisplayName(raw: String): String {
+        return raw.replace(Regex("[^A-Za-z\\s.-]"), "")
+            .trim()
+            .split(Regex("\\s+"))
+            .joinToString(" ") { word ->
+                word.lowercase(Locale.US).replaceFirstChar { c ->
+                    if (c.isLowerCase()) c.titlecase(Locale.US) else c.toString()
+                }
+            }
+    }
+
     fun isPlausibleCnicFrame(
         sideLabel: String,
         rawText: String,
@@ -105,7 +242,6 @@ object CnicMatchValidator {
             return CnicMatchValidationResult(isMatch = true)
         }
 
-        // 1. Check 13-digit CNIC number if detected by OCR on either side
         val detectedCnics = extractAllCnicDigits(combinedText)
         val normalizedInputCnic = Formatters.sanitizeCnicDigits(cnicDigits)
         if (detectedCnics.isNotEmpty() && normalizedInputCnic.length == 13 && normalizedInputCnic !in detectedCnics) {
@@ -113,7 +249,6 @@ object CnicMatchValidator {
             mismatches += "CNIC Number does not match the scanned CNIC card ($firstDetected). Check digits or re-scan."
         }
 
-        // 2. Check Full Legal Name when readable English text is present on the front card
         val frontUpper = (frontText ?: combinedText).uppercase(Locale.US)
         val alphaCharCount = frontUpper.count { it in 'A'..'Z' }
         val cardWords = frontUpper
@@ -127,13 +262,11 @@ object CnicMatchValidator {
             val matchedTokens = nameTokens.count { token ->
                 cardWords.any { word -> fuzzyWordMatches(token, word) }
             }
-            val requiredMatches = if (nameTokens.size == 1) 1 else 1
-            if (matchedTokens < requiredMatches) {
+            if (matchedTokens < 1) {
                 mismatches += "Full Legal Name does not match the name detected on the scanned CNIC card. Check spelling against your CNIC."
             }
         }
 
-        // 3. Check Issue & Expiry Dates when card issue/expiry dates (>= 2005) are clearly detected
         val cardDates = extractIsoDates(combinedText)
         val modernCardDates = cardDates.filter { date ->
             val year = date.take(4).toIntOrNull() ?: 0

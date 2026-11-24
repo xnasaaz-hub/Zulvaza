@@ -122,6 +122,7 @@ dependencies {
   // implementation(libs.play.services.maps)
   // implementation(libs.retrofit)
   implementation(libs.mlkit.text.recognition)
+  implementation(libs.mlkit.face.detection)
   implementation(libs.zxing.core)
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)

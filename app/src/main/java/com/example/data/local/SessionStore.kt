@@ -225,10 +225,12 @@ class SessionStore(private val context: Context) {
             put("fullName", verification.details.fullName)
             put("cnic", verification.details.cnic)
             put("gender", verification.details.gender)
+            put("dateOfBirth", verification.details.dateOfBirth)
             put("issueDate", verification.details.issueDate)
             put("expiryDate", verification.details.expiryDate)
             put("cnicFront", verification.details.cnicFront)
             put("cnicBack", verification.details.cnicBack)
+            put("facePhoto", verification.details.facePhoto)
             put("phone", verification.details.phone)
             put("whatsapp", verification.details.whatsapp)
             put("city", verification.details.city)
@@ -302,10 +304,12 @@ class SessionStore(private val context: Context) {
                     fullName = vObj.optString("fullName"),
                     cnic = vObj.optString("cnic"),
                     gender = vObj.optString("gender", "male"),
+                    dateOfBirth = vObj.optString("dateOfBirth"),
                     issueDate = vObj.optString("issueDate"),
                     expiryDate = vObj.optString("expiryDate"),
                     cnicFront = vObj.optString("cnicFront"),
                     cnicBack = vObj.optString("cnicBack"),
+                    facePhoto = vObj.optString("facePhoto"),
                     phone = vObj.optString("phone"),
                     whatsapp = vObj.optString("whatsapp"),
                     city = vObj.optString("city"),

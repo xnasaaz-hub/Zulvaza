@@ -1,8 +1,14 @@
 package com.example.ui.screens
 
+import android.graphics.BitmapFactory
+import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -36,12 +42,18 @@ import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.DocumentScanner
 import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.LocationCity
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Storefront
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -74,37 +86,53 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusEvent
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.data.model.SellerIdentityDetails
+import com.example.data.model.SellerStore
 import com.example.data.model.SellerVerification
 import com.example.data.model.VerificationStatus
-import com.example.ui.components.CnicLiveCameraOverlayScreen
+import com.example.ui.components.CnicDualScannerScreen
+import com.example.ui.components.FaceLivenessScreen
+import com.example.ui.components.ImageCropDialog
 import com.example.ui.components.LocationGpsSection
 import com.example.ui.components.SignedRemoteImage
 import com.example.ui.theme.ErrorRed
 import com.example.ui.theme.ErrorRedSoft
 import com.example.ui.theme.SuccessGreen
+import com.example.ui.theme.ZulvazaNavy
 import com.example.ui.theme.ZulvazaOrange
 import com.example.util.CnicMatchValidator
 import com.example.util.CnicVisualTransformation
 import com.example.util.Formatters
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.TimeZone
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun VerificationScreen(
     verification: SellerVerification,
+    store: SellerStore?,
     canNavigateBack: Boolean,
     isBusy: Boolean,
     resolveDocUrl: (String) -> String?,
+    resolveFaceUrl: (String) -> String?,
+    resolveStoreMedia: (String?) -> String?,
     onUploadCnic: suspend (ByteArray, String) -> String,
-    onSubmit: (SellerIdentityDetails) -> Unit,
+    onUploadFacePhoto: suspend (ByteArray) -> String,
+    onUploadStoreMediaBytes: suspend (ByteArray, String, String, String?, (Float) -> Unit) -> String,
+    onSubmit: (SellerIdentityDetails, SellerStore?) -> Unit,
     onToast: (String, Boolean) -> Unit,
     onBack: () -> Unit,
     onSignOut: () -> Unit
@@ -112,27 +140,43 @@ fun VerificationScreen(
     val scope = rememberCoroutineScope()
     var step by remember { mutableIntStateOf(1) }
 
-    // Camera capture mode ("front" or "back")
-    var activeCameraSide by remember { mutableStateOf<String?>(null) }
-    var uploadingSide by remember { mutableStateOf<String?>(null) }
+    // Sub-screen overlays inside wizard
+    var showDualCnicScanner by remember { mutableStateOf(false) }
+    var cnicRescanStartSide by remember { mutableStateOf<String?>(null) }
+    var showFaceScanner by remember { mutableStateOf(false) }
+    var isUploadingCnic by remember { mutableStateOf(false) }
+    var isUploadingFace by remember { mutableStateOf(false) }
+
+    // Store crop target for Step 5
+    var cropStoreTarget by remember { mutableStateOf<Pair<Boolean, Uri>?>(null) }
+    var uploadingStoreLogo by remember { mutableStateOf(false) }
+    var uploadingStoreBanner by remember { mutableStateOf(false) }
+
+    // OCR state & local preview bytes
     var frontScanOcrText by remember(verification) { mutableStateOf<String?>(null) }
     var backScanOcrText by remember(verification) { mutableStateOf<String?>(null) }
+    var localFrontBytes by remember { mutableStateOf<ByteArray?>(null) }
+    var localBackBytes by remember { mutableStateOf<ByteArray?>(null) }
+    var localFaceBytes by remember { mutableStateOf<ByteArray?>(null) }
     var scanMismatches by remember { mutableStateOf<List<String>>(emptyList()) }
 
-    // Date picker target ("issue" or "expiry")
+    // Date picker target ("dob", "issue", or "expiry")
     var datePickerTarget by remember { mutableStateOf<String?>(null) }
 
     val initial = verification.details
     var fullName by remember(verification) { mutableStateOf(initial.fullName) }
     var cnicDigits by remember(verification) { mutableStateOf(Formatters.sanitizeCnicDigits(initial.cnic)) }
     var gender by remember(verification) { mutableStateOf(initial.gender.ifBlank { "male" }) }
+    var dateOfBirth by remember(verification) { mutableStateOf(initial.dateOfBirth) }
     var issueDate by remember(verification) { mutableStateOf(initial.issueDate) }
     var expiryDate by remember(verification) { mutableStateOf(initial.expiryDate) }
     var cnicFrontPath by remember(verification) { mutableStateOf(initial.cnicFront) }
     var cnicBackPath by remember(verification) { mutableStateOf(initial.cnicBack) }
-    var phoneDigits by remember(verification) { mutableStateOf(Formatters.formatLocalPakistanPhone(initial.phone)) }
-    var whatsappDigits by remember(verification) { mutableStateOf(Formatters.formatLocalPakistanPhone(initial.whatsapp)) }
+    var facePhotoPath by remember(verification) { mutableStateOf(initial.facePhoto) }
 
+    // Contact & Location (Step 4)
+    var phoneDigits by remember(verification) { mutableStateOf(Formatters.formatLocalPakistanPhone(initial.phone)) }
+    var whatsappDigits10 by remember(verification) { mutableStateOf(Formatters.stripPakistanPrefix(initial.whatsapp)) }
     var city by remember(verification) { mutableStateOf(initial.city) }
     var street by remember(verification) { mutableStateOf(initial.street) }
     var state by remember(verification) { mutableStateOf(initial.state) }
@@ -143,48 +187,146 @@ fun VerificationScreen(
     var longitude by remember(verification) { mutableStateOf<Double?>(initial.longitude) }
     var genderExpanded by remember { mutableStateOf(false) }
 
+    // Store setup (Step 5)
+    var shopName by remember(store) { mutableStateOf(store?.shopName.orEmpty()) }
+    var shopSlug by remember(store) { mutableStateOf(store?.slug.orEmpty()) }
+    var shopBio by remember(store) { mutableStateOf(store?.bio.orEmpty()) }
+    var shopIntro by remember(store) { mutableStateOf(store?.introduction.orEmpty()) }
+    var shopLogoPath by remember(store) { mutableStateOf(store?.logoPath) }
+    var shopBannerPath by remember(store) { mutableStateOf(store?.bannerPath) }
+
+    val logoPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) cropStoreTarget = true to uri
+    }
+
+    val bannerPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) cropStoreTarget = false to uri
+    }
+
     BackHandler {
-        if (activeCameraSide != null) {
-            activeCameraSide = null
-        } else if (step == 2) {
-            step = 1
-        } else if (canNavigateBack) {
-            onBack()
+        when {
+            showDualCnicScanner -> showDualCnicScanner = false
+            showFaceScanner -> showFaceScanner = false
+            cropStoreTarget != null -> cropStoreTarget = null
+            step > 1 -> step -= 1
+            canNavigateBack -> onBack()
         }
     }
 
-    if (activeCameraSide != null) {
-        val side = activeCameraSide!!
-        CnicLiveCameraOverlayScreen(
-            sideLabel = if (side == "front") "Front" else "Back",
-            onCaptured = { capture ->
-                activeCameraSide = null
-                uploadingSide = side
-                if (side == "front") {
-                    frontScanOcrText = capture.extractedText
-                } else {
-                    backScanOcrText = capture.extractedText
-                }
+    if (showDualCnicScanner) {
+        CnicDualScannerScreen(
+            startOnSide = cnicRescanStartSide,
+            onCompleted = { dual ->
+                showDualCnicScanner = false
+                cnicRescanStartSide = null
+                localFrontBytes = dual.front.jpegBytes
+                localBackBytes = dual.back.jpegBytes
+                frontScanOcrText = dual.front.extractedText
+                backScanOcrText = dual.back.extractedText
                 scanMismatches = emptyList()
+
+                // Auto-populate Step 3 identity fields from cropped CNIC OCR
+                val extracted = CnicMatchValidator.extractCnicDetails(
+                    frontText = dual.front.extractedText,
+                    backText = dual.back.extractedText
+                )
+                if (extracted.fullName.isNotBlank()) fullName = extracted.fullName
+                if (extracted.cnicDigits.length == 13) cnicDigits = extracted.cnicDigits
+                if (extracted.dateOfBirth.isNotBlank()) dateOfBirth = extracted.dateOfBirth
+                if (extracted.issueDate.isNotBlank()) issueDate = extracted.issueDate
+                if (extracted.expiryDate.isNotBlank()) expiryDate = extracted.expiryDate
+                if (extracted.gender.isNotBlank()) gender = extracted.gender
+
+                isUploadingCnic = true
                 scope.launch {
                     try {
-                        val path = onUploadCnic(capture.jpegBytes, side)
-                        if (side == "front") cnicFrontPath = path else cnicBackPath = path
-                        onToast("CNIC ${side.replaceFirstChar { it.uppercase() }} scanned & uploaded", false)
+                        val frontPath = onUploadCnic(dual.front.jpegBytes, "front")
+                        val backPath = onUploadCnic(dual.back.jpegBytes, "back")
+                        cnicFrontPath = frontPath
+                        cnicBackPath = backPath
+                        onToast("CNIC Front & Back scanned and uploaded", false)
                     } catch (e: Exception) {
-                        onToast(e.message ?: "Failed to upload CNIC photo", true)
+                        onToast(e.message ?: "Failed to upload CNIC images", true)
                     } finally {
-                        uploadingSide = null
+                        isUploadingCnic = false
                     }
                 }
             },
-            onClose = { activeCameraSide = null }
+            onClose = {
+                showDualCnicScanner = false
+                cnicRescanStartSide = null
+            }
         )
         return
     }
 
+    if (showFaceScanner) {
+        FaceLivenessScreen(
+            onVerified = { faceBytes ->
+                showFaceScanner = false
+                localFaceBytes = faceBytes
+                isUploadingFace = true
+                scope.launch {
+                    try {
+                        val uploadedFacePath = onUploadFacePhoto(faceBytes)
+                        facePhotoPath = uploadedFacePath
+                        onToast("Face verified and uploaded", false)
+                    } catch (e: Exception) {
+                        onToast(e.message ?: "Failed to upload face photo", true)
+                    } finally {
+                        isUploadingFace = false
+                    }
+                }
+            },
+            onClose = { showFaceScanner = false }
+        )
+        return
+    }
+
+    if (cropStoreTarget != null) {
+        val (isLogo, pickedUri) = cropStoreTarget!!
+        ImageCropDialog(
+            imageUri = pickedUri,
+            isCircularLogo = isLogo,
+            title = if (isLogo) "Crop & Adjust Store Logo" else "Crop & Adjust Cover Banner",
+            onCropped = { croppedBytes ->
+                cropStoreTarget = null
+                scope.launch {
+                    if (isLogo) uploadingStoreLogo = true else uploadingStoreBanner = true
+                    try {
+                        val uploaded = onUploadStoreMediaBytes(croppedBytes, "jpg", "image/jpeg", null) {}
+                        if (isLogo) {
+                            shopLogoPath = uploaded
+                            onToast("Store logo cropped & uploaded", false)
+                        } else {
+                            shopBannerPath = uploaded
+                            onToast("Cover banner cropped & uploaded", false)
+                        }
+                    } catch (e: Exception) {
+                        onToast(e.message ?: "Upload failed", true)
+                    } finally {
+                        uploadingStoreLogo = false
+                        uploadingStoreBanner = false
+                    }
+                }
+            },
+            onCancel = { cropStoreTarget = null }
+        )
+    }
+
     if (datePickerTarget != null) {
-        val pickerState = rememberDatePickerState()
+        val currentValue = when (datePickerTarget) {
+            "dob" -> dateOfBirth
+            "issue" -> issueDate
+            else -> expiryDate
+        }
+        val pickerState = rememberDatePickerState(
+            initialSelectedDateMillis = parseIsoDateToMillis(currentValue)
+        )
         DatePickerDialog(
             onDismissRequest = { datePickerTarget = null },
             confirmButton = {
@@ -193,7 +335,11 @@ fun VerificationScreen(
                         val millis = pickerState.selectedDateMillis
                         if (millis != null) {
                             val formatted = Formatters.formatMillisToIsoDate(millis)
-                            if (datePickerTarget == "issue") issueDate = formatted else expiryDate = formatted
+                            when (datePickerTarget) {
+                                "dob" -> dateOfBirth = formatted
+                                "issue" -> issueDate = formatted
+                                else -> expiryDate = formatted
+                            }
                             scanMismatches = emptyList()
                         }
                         datePickerTarget = null
@@ -208,8 +354,13 @@ fun VerificationScreen(
         }
     }
 
-    val phoneE164 = Formatters.normalizePakistanPhoneToE164(phoneDigits)
-    val whatsappE164 = Formatters.normalizePakistanPhoneToE164(whatsappDigits)
+    val stepTitle = when (step) {
+        1 -> "CNIC Card Scan"
+        2 -> "Face Liveness Check"
+        3 -> "Identity Details"
+        4 -> "Contact & Location"
+        else -> "Store Profile Setup"
+    }
 
     Column(
         modifier = Modifier
@@ -227,18 +378,19 @@ fun VerificationScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (step == 2 || canNavigateBack) {
-                        IconButton(onClick = { if (step == 2) step = 1 else onBack() }) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                    if (step > 1 || canNavigateBack) {
+                        IconButton(onClick = { if (step > 1) step -= 1 else onBack() }) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                         }
                     }
                     Column {
                         Text("Seller Verification", style = MaterialTheme.typography.headlineSmall)
                         Text(
-                            text = "Step $step of 2 • ${if (step == 1) "Identity & CNIC" else "Pickup Address & GPS"}",
+                            text = "Step $step of 5 • $stepTitle",
                             style = MaterialTheme.typography.labelMedium,
-                            color = ZulvazaOrange
+                            color = ZulvazaOrange,
+                            fontWeight = FontWeight.SemiBold
                         )
                     }
                 }
@@ -252,8 +404,10 @@ fun VerificationScreen(
             }
 
             Spacer(modifier = Modifier.height(10.dp))
+
+            // 5-Step Progress Dots + Bar
             LinearProgressIndicator(
-                progress = { if (step == 1) 0.5f else 1f },
+                progress = { step / 5f },
                 color = ZulvazaOrange,
                 trackColor = MaterialTheme.colorScheme.outline,
                 modifier = Modifier
@@ -261,6 +415,28 @@ fun VerificationScreen(
                     .height(7.dp)
                     .clip(CircleShape)
             )
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                val labels = listOf("1.CNIC", "2.Face", "3.Details", "4.Contact", "5.Store")
+                labels.forEachIndexed { idx, lbl ->
+                    val sNum = idx + 1
+                    val color = when {
+                        sNum < step -> SuccessGreen
+                        sNum == step -> ZulvazaOrange
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                    Text(
+                        text = lbl,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = color,
+                        fontWeight = if (sNum == step) FontWeight.Bold else FontWeight.Medium,
+                        maxLines = 1
+                    )
+                }
+            }
 
             if (verification.status == VerificationStatus.REJECTED && !verification.reason.isNullOrBlank()) {
                 Spacer(modifier = Modifier.height(14.dp))
@@ -293,462 +469,981 @@ fun VerificationScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            if (step == 1) {
-                Card(
-                    shape = RoundedCornerShape(22.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-                ) {
-                    Column(modifier = Modifier.padding(18.dp)) {
-                        val nameBringer = remember { BringIntoViewRequester() }
-                        val cnicBringer = remember { BringIntoViewRequester() }
-                        val phoneBringer = remember { BringIntoViewRequester() }
-                        val whatsappBringer = remember { BringIntoViewRequester() }
+            when (step) {
+                // ================= STEP 1: CNIC CARD SCAN =================
+                1 -> {
+                    Card(
+                        shape = RoundedCornerShape(22.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(18.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = ZulvazaOrange.copy(alpha = 0.14f),
+                                    modifier = Modifier.size(44.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = Icons.Default.DocumentScanner,
+                                            contentDescription = null,
+                                            tint = ZulvazaOrange,
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("Scan Your Physical CNIC", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        "Camera scans Front side first, flips automatically to scan Back side, and crops strictly to the card border.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
 
-                        OutlinedTextField(
-                            value = fullName,
-                            onValueChange = {
-                                fullName = it
-                                scanMismatches = emptyList()
-                            },
-                            label = { Text("Full Legal Name (as on CNIC)") },
-                            leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
-                            singleLine = true,
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .bringIntoViewRequester(nameBringer)
-                                .onFocusEvent { if (it.isFocused) scope.launch { nameBringer.bringIntoView() } }
-                                .testTag("kyc_full_name")
-                        )
+                            Spacer(modifier = Modifier.height(16.dp))
 
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        OutlinedTextField(
-                            value = cnicDigits,
-                            onValueChange = { raw ->
-                                cnicDigits = Formatters.sanitizeCnicDigits(raw)
-                                scanMismatches = emptyList()
-                            },
-                            label = { Text("CNIC Number") },
-                            placeholder = { Text("12345-1234567-1") },
-                            leadingIcon = { Icon(Icons.Default.Badge, contentDescription = null) },
-                            visualTransformation = remember { CnicVisualTransformation() },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            supportingText = { Text("${cnicDigits.length}/13 digits (format: 12345-1234567-1)") },
-                            isError = cnicDigits.isNotEmpty() && cnicDigits.length != 13,
-                            singleLine = true,
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .bringIntoViewRequester(cnicBringer)
-                                .onFocusEvent { if (it.isFocused) scope.launch { cnicBringer.bringIntoView() } }
-                                .testTag("kyc_cnic")
-                        )
-
-                        Spacer(modifier = Modifier.height(10.dp))
-                        val genderOptions = listOf("male" to "Male", "female" to "Female", "other" to "Other")
-                        val selectedGenderLabel = genderOptions.firstOrNull { it.first == gender }?.second ?: "Male"
-                        ExposedDropdownMenuBox(
-                            expanded = genderExpanded,
-                            onExpandedChange = { genderExpanded = !genderExpanded }
-                        ) {
-                            OutlinedTextField(
-                                value = selectedGenderLabel,
-                                onValueChange = {},
-                                readOnly = true,
-                                label = { Text("Gender") },
-                                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = genderExpanded) },
-                                shape = RoundedCornerShape(14.dp),
+                            Button(
+                                onClick = {
+                                    cnicRescanStartSide = null
+                                    showDualCnicScanner = true
+                                },
+                                enabled = !isUploadingCnic,
+                                colors = ButtonDefaults.buttonColors(containerColor = ZulvazaOrange),
+                                shape = RoundedCornerShape(16.dp),
+                                contentPadding = PaddingValues(vertical = 14.dp),
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .menuAnchor(MenuAnchorType.PrimaryNotEditable)
-                                    .testTag("kyc_gender")
-                            )
-                            ExposedDropdownMenu(
-                                expanded = genderExpanded,
-                                onDismissRequest = { genderExpanded = false }
+                                    .defaultMinSize(minHeight = 52.dp)
+                                    .testTag("scan_cnic_card_button")
                             ) {
-                                genderOptions.forEach { (key, label) ->
-                                    DropdownMenuItem(
-                                        text = { Text(label) },
-                                        onClick = {
-                                            gender = key
-                                            genderExpanded = false
-                                        }
+                                if (isUploadingCnic) {
+                                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = Color.White)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Uploading Scanned CNIC...", maxLines = 1)
+                                } else {
+                                    Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(20.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = if (cnicFrontPath.isNotBlank() && cnicBackPath.isNotBlank()) "Rescan Both Sides" else "Scan CNIC Card",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1
+                                    )
+                                }
+                            }
+
+                            if (cnicFrontPath.isNotBlank() || cnicBackPath.isNotBlank() || localFrontBytes != null || localBackBytes != null) {
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    CnicStepPreviewTile(
+                                        title = "CNIC Front",
+                                        localBytes = localFrontBytes,
+                                        signedUrl = resolveDocUrl(cnicFrontPath),
+                                        hasPath = cnicFrontPath.isNotBlank(),
+                                        isUploading = isUploadingCnic,
+                                        onRescan = {
+                                            cnicRescanStartSide = "Front"
+                                            showDualCnicScanner = true
+                                        },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("capture_cnic_front")
+                                    )
+                                    CnicStepPreviewTile(
+                                        title = "CNIC Back",
+                                        localBytes = localBackBytes,
+                                        signedUrl = resolveDocUrl(cnicBackPath),
+                                        hasPath = cnicBackPath.isNotBlank(),
+                                        isUploading = isUploadingCnic,
+                                        onRescan = {
+                                            cnicRescanStartSide = "Back"
+                                            showDualCnicScanner = true
+                                        },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("capture_cnic_back")
                                     )
                                 }
                             }
                         }
+                    }
 
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            modifier = Modifier.fillMaxWidth()
+                    Spacer(modifier = Modifier.height(18.dp))
+                    Button(
+                        onClick = {
+                            when {
+                                isUploadingCnic -> onToast("Wait for CNIC upload to complete", true)
+                                cnicFrontPath.isBlank() || cnicBackPath.isBlank() -> onToast("Tap Scan CNIC Card to scan both Front & Back", true)
+                                else -> step = 2
+                            }
+                        },
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 52.dp)
+                            .testTag("step1_next_button")
+                    ) {
+                        Text("Continue to Face Verification", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+
+                // ================= STEP 2: FACE LIVENESS VERIFICATION =================
+                2 -> {
+                    Card(
+                        shape = RoundedCornerShape(22.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(20.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            DateSelectorField(
-                                label = "Issue Date",
-                                value = issueDate,
-                                onClick = { datePickerTarget = "issue" },
-                                modifier = Modifier.weight(1f)
-                            )
-                            DateSelectorField(
-                                label = "Expiry Date",
-                                value = expiryDate,
-                                onClick = { datePickerTarget = "expiry" },
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text("Live CNIC Scanner (Front & Back)", style = MaterialTheme.typography.titleSmall)
-                        Text(
-                            "Hold your physical CNIC inside the scanner frame — it detects the card, verifies details against your input, and uploads for review.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            CnicCaptureTile(
-                                title = "CNIC Front",
-                                path = cnicFrontPath,
-                                signedUrl = resolveDocUrl(cnicFrontPath),
-                                isUploading = uploadingSide == "front",
-                                onClick = { activeCameraSide = "front" },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .testTag("capture_cnic_front")
-                            )
-                            CnicCaptureTile(
-                                title = "CNIC Back",
-                                path = cnicBackPath,
-                                signedUrl = resolveDocUrl(cnicBackPath),
-                                isUploading = uploadingSide == "back",
-                                onClick = { activeCameraSide = "back" },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .testTag("capture_cnic_back")
-                            )
-                        }
-
-                        if (scanMismatches.isNotEmpty()) {
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Surface(
-                                color = ErrorRedSoft,
-                                shape = RoundedCornerShape(14.dp),
-                                border = BorderStroke(1.dp, ErrorRed.copy(alpha = 0.45f)),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("cnic_mismatch_error_card")
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(12.dp),
-                                    verticalAlignment = Alignment.Top
+                            if (facePhotoPath.isNotBlank() || localFaceBytes != null) {
+                                Surface(
+                                    color = SuccessGreen.copy(alpha = 0.14f),
+                                    shape = RoundedCornerShape(50),
+                                    border = BorderStroke(1.dp, SuccessGreen.copy(alpha = 0.5f))
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Error,
-                                        contentDescription = "CNIC mismatch",
-                                        tint = ErrorRed,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(10.dp))
-                                    Column {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = SuccessGreen, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
                                         Text(
-                                            text = "CNIC Details Do Not Match Scanned Card",
+                                            "Face Verified Successfully",
+                                            color = SuccessGreen,
                                             style = MaterialTheme.typography.labelLarge,
-                                            color = ErrorRed,
                                             fontWeight = FontWeight.Bold
                                         )
-                                        Spacer(modifier = Modifier.height(4.dp))
-                                        scanMismatches.forEach { reason ->
-                                            Text(
-                                                text = "• $reason",
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = ErrorRed
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(16.dp))
+
+                                val localFaceBmp = remember(localFaceBytes) {
+                                    localFaceBytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+                                }
+                                val remoteFaceUrl = resolveFaceUrl(facePhotoPath)
+                                Box(
+                                    modifier = Modifier
+                                        .size(148.dp)
+                                        .clip(CircleShape)
+                                        .border(3.dp, SuccessGreen, CircleShape)
+                                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    when {
+                                        localFaceBmp != null -> {
+                                            Image(
+                                                bitmap = localFaceBmp.asImageBitmap(),
+                                                contentDescription = "Verified face photo",
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.fillMaxSize()
+                                            )
+                                        }
+                                        !remoteFaceUrl.isNullOrBlank() -> {
+                                            SignedRemoteImage(
+                                                url = remoteFaceUrl,
+                                                contentDescription = "Verified face photo",
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.fillMaxSize()
                                             )
                                         }
                                     }
                                 }
+                            } else {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = ZulvazaOrange.copy(alpha = 0.14f),
+                                    modifier = Modifier.size(84.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = Icons.Default.Face,
+                                            contentDescription = null,
+                                            tint = ZulvazaOrange,
+                                            modifier = Modifier.size(44.dp)
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(14.dp))
+                                Text(
+                                    text = "Live 5-Step Face Verification",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    textAlign = TextAlign.Center
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = "Look straight, then follow voice & screen prompts to turn Left, Right, Up, and Down inside the green oval.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center
+                                )
                             }
-                        }
 
-                        Spacer(modifier = Modifier.height(16.dp))
+                            Spacer(modifier = Modifier.height(18.dp))
 
-                        OutlinedTextField(
-                            value = phoneDigits,
-                            onValueChange = { raw -> phoneDigits = Formatters.sanitizeLocalPakistanPhone(raw) },
-                            label = { Text("Mobile Phone (11 digits)") },
-                            placeholder = { Text("03001234567") },
-                            leadingIcon = { Icon(Icons.Default.Phone, contentDescription = null) },
-                            supportingText = {
-                                Text(
-                                    if (phoneDigits.isNotEmpty() && !phoneDigits.startsWith("0")) {
-                                        "Must start with 0 (e.g. 03001234567)"
-                                    } else {
-                                        "${phoneDigits.length}/11 digits"
-                                    }
-                                )
-                            },
-                            isError = phoneDigits.isNotEmpty() && !Formatters.isValidLocalPakistanPhone(phoneDigits),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-                            singleLine = true,
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .bringIntoViewRequester(phoneBringer)
-                                .onFocusEvent { if (it.isFocused) scope.launch { phoneBringer.bringIntoView() } }
-                                .testTag("kyc_phone")
-                        )
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        OutlinedTextField(
-                            value = whatsappDigits,
-                            onValueChange = { raw -> whatsappDigits = Formatters.sanitizeLocalPakistanPhone(raw) },
-                            label = { Text("WhatsApp Number (11 digits)") },
-                            placeholder = { Text("03001234567") },
-                            leadingIcon = {
-                                Icon(
-                                    painter = painterResource(id = R.drawable.ic_whatsapp),
-                                    contentDescription = "WhatsApp",
-                                    tint = Color.Unspecified,
-                                    modifier = Modifier.size(22.dp)
-                                )
-                            },
-                            supportingText = {
-                                Text(
-                                    if (whatsappDigits.isNotEmpty() && !whatsappDigits.startsWith("0")) {
-                                        "Must start with 0 (e.g. 03001234567)"
-                                    } else {
-                                        "${whatsappDigits.length}/11 digits"
-                                    }
-                                )
-                            },
-                            isError = whatsappDigits.isNotEmpty() && !Formatters.isValidLocalPakistanPhone(whatsappDigits),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-                            singleLine = true,
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .bringIntoViewRequester(whatsappBringer)
-                                .onFocusEvent { if (it.isFocused) scope.launch { whatsappBringer.bringIntoView() } }
-                                .testTag("kyc_whatsapp")
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(18.dp))
-
-                Button(
-                    onClick = {
-                        when {
-                            fullName.isBlank() -> onToast("Enter your full legal name", true)
-                            cnicDigits.length != 13 -> onToast("Enter a valid 13-digit CNIC", true)
-                            issueDate.isBlank() || expiryDate.isBlank() -> onToast("Select CNIC issue and expiry dates", true)
-                            expiryDate <= issueDate -> onToast("CNIC expiry date must be after issue date", true)
-                            cnicFrontPath.isBlank() || cnicBackPath.isBlank() -> onToast("Scan both CNIC front and back via camera", true)
-                            !Formatters.isValidLocalPakistanPhone(phoneDigits) -> onToast("Enter valid 11-digit mobile starting with 0 (e.g. 03001234567)", true)
-                            !Formatters.isValidLocalPakistanPhone(whatsappDigits) -> onToast("Enter valid 11-digit WhatsApp starting with 0 (e.g. 03001234567)", true)
-                            else -> {
-                                val matchResult = CnicMatchValidator.validateAgainstEnteredDetails(
-                                    fullName = fullName,
-                                    cnicDigits = cnicDigits,
-                                    issueDateIso = issueDate,
-                                    expiryDateIso = expiryDate,
-                                    frontText = frontScanOcrText,
-                                    backText = backScanOcrText
-                                )
-                                if (!matchResult.isMatch) {
-                                    scanMismatches = matchResult.mismatches
-                                    onToast("Entered details do not match your scanned CNIC card. Please fix highlighted fields.", true)
+                            Button(
+                                onClick = { showFaceScanner = true },
+                                enabled = !isUploadingFace,
+                                colors = ButtonDefaults.buttonColors(containerColor = ZulvazaOrange),
+                                shape = RoundedCornerShape(16.dp),
+                                contentPadding = PaddingValues(vertical = 14.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .defaultMinSize(minHeight = 52.dp)
+                                    .testTag("start_face_verification_button")
+                            ) {
+                                if (isUploadingFace) {
+                                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = Color.White)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Uploading Face Photo...", maxLines = 1)
                                 } else {
-                                    scanMismatches = emptyList()
-                                    step = 2
+                                    Icon(
+                                        imageVector = if (facePhotoPath.isNotBlank()) Icons.Default.Refresh else Icons.Default.Face,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = if (facePhotoPath.isNotBlank()) "Retake Face Verification" else "Start Face Verification",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1
+                                    )
                                 }
                             }
                         }
-                    },
-                    shape = RoundedCornerShape(16.dp),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .defaultMinSize(minHeight = 52.dp)
-                        .testTag("kyc_next_step_button")
-                ) {
-                    Text(
-                        text = "Continue to Address",
-                        style = MaterialTheme.typography.titleMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            } else {
-                // Step 2: Address + Native GPS
-                Card(
-                    shape = RoundedCornerShape(22.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-                ) {
-                    Column(modifier = Modifier.padding(18.dp)) {
-                        LocationGpsSection(
-                            latitude = latitude,
-                            longitude = longitude,
-                            onCoordinatesChanged = { lat, lng ->
-                                latitude = lat
-                                longitude = lng
+                    }
+
+                    Spacer(modifier = Modifier.height(18.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        OutlinedButton(
+                            onClick = { step = 1 },
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .weight(0.35f)
+                                .defaultMinSize(minHeight = 52.dp)
+                        ) { Text("Back", maxLines = 1) }
+
+                        Button(
+                            onClick = {
+                                when {
+                                    isUploadingFace -> onToast("Wait for face photo upload to finish", true)
+                                    facePhotoPath.isBlank() -> onToast("Complete live face verification first", true)
+                                    else -> step = 3
+                                }
                             },
-                            onAddressGeocoded = { geo ->
-                                if (geo.city.isNotBlank()) city = geo.city
-                                if (geo.street.isNotBlank()) street = geo.street
-                                if (geo.state.isNotBlank()) state = geo.state
-                                if (geo.address.isNotBlank()) address = geo.address
-                                if (geo.zipCode.isNotBlank()) zipCode = geo.zipCode
-                                onToast("Location updated — verify your address details below", false)
-                            },
-                            onError = { msg -> onToast(msg, true) }
-                        )
-
-                        Spacer(modifier = Modifier.height(14.dp))
-
-                        val cityBringer = remember { BringIntoViewRequester() }
-                        val stateBringer = remember { BringIntoViewRequester() }
-                        val streetBringer = remember { BringIntoViewRequester() }
-                        val addrBringer = remember { BringIntoViewRequester() }
-                        val addr2Bringer = remember { BringIntoViewRequester() }
-                        val zipBringer = remember { BringIntoViewRequester() }
-
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            modifier = Modifier.fillMaxWidth()
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .weight(0.65f)
+                                .defaultMinSize(minHeight = 52.dp)
+                                .testTag("step2_next_button")
                         ) {
-                            OutlinedTextField(
-                                value = city,
-                                onValueChange = { city = it },
-                                label = { Text("City") },
-                                leadingIcon = { Icon(Icons.Default.LocationCity, contentDescription = null) },
-                                singleLine = true,
-                                shape = RoundedCornerShape(14.dp),
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .bringIntoViewRequester(cityBringer)
-                                    .onFocusEvent { if (it.isFocused) scope.launch { cityBringer.bringIntoView() } }
-                                    .testTag("kyc_city")
+                            Text("Continue to Details", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+
+                // ================= STEP 3: IDENTITY DETAILS (AUTO-FILLED FROM OCR) =================
+                3 -> {
+                    Card(
+                        shape = RoundedCornerShape(22.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(18.dp)) {
+                            val nameBringer = remember { BringIntoViewRequester() }
+                            val cnicBringer = remember { BringIntoViewRequester() }
+
+                            Text("Identity Details (Verify CNIC Match)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Text(
+                                "Confirm your details match your scanned CNIC card.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                            Spacer(modifier = Modifier.height(14.dp))
+
                             OutlinedTextField(
-                                value = state,
-                                onValueChange = { state = it },
-                                label = { Text("Province / State") },
-                                placeholder = { Text("Punjab") },
+                                value = fullName,
+                                onValueChange = {
+                                    fullName = it
+                                    scanMismatches = emptyList()
+                                },
+                                label = { Text("Full Legal Name (as on CNIC)") },
+                                leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
                                 singleLine = true,
                                 shape = RoundedCornerShape(14.dp),
                                 modifier = Modifier
-                                    .weight(1f)
-                                    .bringIntoViewRequester(stateBringer)
-                                    .onFocusEvent { if (it.isFocused) scope.launch { stateBringer.bringIntoView() } }
-                                    .testTag("kyc_state")
+                                    .fillMaxWidth()
+                                    .bringIntoViewRequester(nameBringer)
+                                    .onFocusEvent { if (it.isFocused) scope.launch { delay(160); nameBringer.bringIntoView() } }
+                                    .testTag("kyc_full_name")
+                            )
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            OutlinedTextField(
+                                value = cnicDigits,
+                                onValueChange = { raw ->
+                                    cnicDigits = Formatters.sanitizeCnicDigits(raw)
+                                    scanMismatches = emptyList()
+                                },
+                                label = { Text("CNIC Number") },
+                                placeholder = { Text("12345-1234567-1") },
+                                leadingIcon = { Icon(Icons.Default.Badge, contentDescription = null) },
+                                visualTransformation = remember { CnicVisualTransformation() },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                supportingText = { Text("${cnicDigits.length}/13 digits (format: 12345-1234567-1)") },
+                                isError = cnicDigits.isNotEmpty() && cnicDigits.length != 13,
+                                singleLine = true,
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .bringIntoViewRequester(cnicBringer)
+                                    .onFocusEvent { if (it.isFocused) scope.launch { delay(160); cnicBringer.bringIntoView() } }
+                                    .testTag("kyc_cnic")
+                            )
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            DateSelectorField(
+                                label = "Date of Birth",
+                                value = dateOfBirth,
+                                onClick = { datePickerTarget = "dob" },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("kyc_dob")
+                            )
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                DateSelectorField(
+                                    label = "Issue Date",
+                                    value = issueDate,
+                                    onClick = { datePickerTarget = "issue" },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                DateSelectorField(
+                                    label = "Expiry Date",
+                                    value = expiryDate,
+                                    onClick = { datePickerTarget = "expiry" },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            val genderOptions = listOf(
+                                Triple("male", "Male", R.drawable.ic_gender_male),
+                                Triple("female", "Female", R.drawable.ic_gender_female),
+                                Triple("other", "Other", R.drawable.ic_gender_other)
+                            )
+                            val selectedGender = genderOptions.firstOrNull { it.first == gender } ?: genderOptions.first()
+
+                            ExposedDropdownMenuBox(
+                                expanded = genderExpanded,
+                                onExpandedChange = { genderExpanded = !genderExpanded }
+                            ) {
+                                OutlinedTextField(
+                                    value = selectedGender.second,
+                                    onValueChange = {},
+                                    readOnly = true,
+                                    label = { Text("Gender") },
+                                    leadingIcon = {
+                                        Icon(
+                                            painter = painterResource(id = selectedGender.third),
+                                            contentDescription = selectedGender.second,
+                                            tint = ZulvazaOrange,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    },
+                                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = genderExpanded) },
+                                    shape = RoundedCornerShape(14.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                                        .testTag("kyc_gender")
+                                )
+                                ExposedDropdownMenu(
+                                    expanded = genderExpanded,
+                                    onDismissRequest = { genderExpanded = false }
+                                ) {
+                                    genderOptions.forEach { (key, label, iconRes) ->
+                                        DropdownMenuItem(
+                                            leadingIcon = {
+                                                Icon(
+                                                    painter = painterResource(id = iconRes),
+                                                    contentDescription = label,
+                                                    tint = if (gender == key) ZulvazaOrange else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    modifier = Modifier.size(20.dp)
+                                                )
+                                            },
+                                            text = { Text(label) },
+                                            onClick = {
+                                                gender = key
+                                                genderExpanded = false
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+
+                            if (scanMismatches.isNotEmpty()) {
+                                Spacer(modifier = Modifier.height(14.dp))
+                                Surface(
+                                    color = ErrorRedSoft,
+                                    shape = RoundedCornerShape(14.dp),
+                                    border = BorderStroke(1.dp, ErrorRed.copy(alpha = 0.45f)),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("cnic_mismatch_error_card")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalAlignment = Alignment.Top
+                                    ) {
+                                        Icon(Icons.Default.Error, contentDescription = "CNIC mismatch", tint = ErrorRed, modifier = Modifier.size(20.dp))
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Column {
+                                            Text(
+                                                text = "CNIC Details Do Not Match Scanned Card",
+                                                style = MaterialTheme.typography.labelLarge,
+                                                color = ErrorRed,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            scanMismatches.forEach { reason ->
+                                                Text("• $reason", style = MaterialTheme.typography.bodySmall, color = ErrorRed)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(18.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        OutlinedButton(
+                            onClick = { step = 2 },
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .weight(0.35f)
+                                .defaultMinSize(minHeight = 52.dp)
+                        ) { Text("Back", maxLines = 1) }
+
+                        Button(
+                            onClick = {
+                                when {
+                                    fullName.isBlank() -> onToast("Enter your full legal name", true)
+                                    cnicDigits.length != 13 -> onToast("Enter a valid 13-digit CNIC", true)
+                                    dateOfBirth.isBlank() -> onToast("Select your date of birth", true)
+                                    issueDate.isBlank() || expiryDate.isBlank() -> onToast("Select CNIC issue and expiry dates", true)
+                                    expiryDate <= issueDate -> onToast("CNIC expiry date must be after issue date", true)
+                                    else -> {
+                                        val matchResult = CnicMatchValidator.validateAgainstEnteredDetails(
+                                            fullName = fullName,
+                                            cnicDigits = cnicDigits,
+                                            issueDateIso = issueDate,
+                                            expiryDateIso = expiryDate,
+                                            frontText = frontScanOcrText,
+                                            backText = backScanOcrText
+                                        )
+                                        if (!matchResult.isMatch) {
+                                            scanMismatches = matchResult.mismatches
+                                            onToast("Entered details do not match your scanned CNIC card.", true)
+                                        } else {
+                                            scanMismatches = emptyList()
+                                            step = 4
+                                        }
+                                    }
+                                }
+                            },
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .weight(0.65f)
+                                .defaultMinSize(minHeight = 52.dp)
+                                .testTag("kyc_next_step_button")
+                        ) {
+                            Text("Continue to Contact", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+
+                // ================= STEP 4: PHONE, WHATSAPP (+92) & LOCATION =================
+                4 -> {
+                    Card(
+                        shape = RoundedCornerShape(22.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(18.dp)) {
+                            val phoneBringer = remember { BringIntoViewRequester() }
+                            val whatsappBringer = remember { BringIntoViewRequester() }
+                            val cityBringer = remember { BringIntoViewRequester() }
+                            val stateBringer = remember { BringIntoViewRequester() }
+                            val streetBringer = remember { BringIntoViewRequester() }
+                            val addrBringer = remember { BringIntoViewRequester() }
+                            val addr2Bringer = remember { BringIntoViewRequester() }
+                            val zipBringer = remember { BringIntoViewRequester() }
+
+                            Text("Contact Numbers", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            OutlinedTextField(
+                                value = phoneDigits,
+                                onValueChange = { raw -> phoneDigits = Formatters.sanitizeLocalPakistanPhone(raw) },
+                                label = { Text("Mobile Phone (11 digits)") },
+                                placeholder = { Text("03001234567") },
+                                leadingIcon = { Icon(Icons.Default.Phone, contentDescription = null) },
+                                supportingText = {
+                                    Text(
+                                        if (phoneDigits.isNotEmpty() && !phoneDigits.startsWith("0")) {
+                                            "Must start with 0 (e.g. 03001234567)"
+                                        } else {
+                                            "${phoneDigits.length}/11 digits"
+                                        }
+                                    )
+                                },
+                                isError = phoneDigits.isNotEmpty() && !Formatters.isValidLocalPakistanPhone(phoneDigits),
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                                singleLine = true,
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .bringIntoViewRequester(phoneBringer)
+                                    .onFocusEvent { if (it.isFocused) scope.launch { delay(160); phoneBringer.bringIntoView() } }
+                                    .testTag("kyc_phone")
+                            )
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            OutlinedTextField(
+                                value = whatsappDigits10,
+                                onValueChange = { raw ->
+                                    whatsappDigits10 = raw.filter { it.isDigit() }.take(10)
+                                },
+                                label = { Text("WhatsApp Number (10 digits)") },
+                                placeholder = { Text("3001234567") },
+                                prefix = {
+                                    Text(
+                                        text = "+92 ",
+                                        fontWeight = FontWeight.Bold,
+                                        color = ZulvazaOrange
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        painter = painterResource(id = R.drawable.ic_whatsapp),
+                                        contentDescription = "WhatsApp",
+                                        tint = Color.Unspecified,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                },
+                                supportingText = {
+                                    Text(
+                                        if (whatsappDigits10.isNotEmpty() && !whatsappDigits10.startsWith("3")) {
+                                            "Enter 10 digits without leading 0 (e.g. 3001234567)"
+                                        } else {
+                                            "${whatsappDigits10.length}/10 digits after +92"
+                                        }
+                                    )
+                                },
+                                isError = whatsappDigits10.isNotEmpty() && !Regex("^3\\d{9}$").matches(whatsappDigits10),
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                                singleLine = true,
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .bringIntoViewRequester(whatsappBringer)
+                                    .onFocusEvent { if (it.isFocused) scope.launch { delay(160); whatsappBringer.bringIntoView() } }
+                                    .testTag("kyc_whatsapp")
+                            )
+
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text("Pickup & Business Location", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            LocationGpsSection(
+                                latitude = latitude,
+                                longitude = longitude,
+                                onCoordinatesChanged = { lat, lng ->
+                                    latitude = lat
+                                    longitude = lng
+                                },
+                                onAddressGeocoded = { geo ->
+                                    if (geo.city.isNotBlank()) city = geo.city
+                                    if (geo.street.isNotBlank()) street = geo.street
+                                    if (geo.state.isNotBlank()) state = geo.state
+                                    if (geo.address.isNotBlank()) address = geo.address
+                                    if (geo.zipCode.isNotBlank()) zipCode = geo.zipCode
+                                    onToast("Location updated — verify your address details below", false)
+                                },
+                                onError = { msg -> onToast(msg, true) }
+                            )
+
+                            Spacer(modifier = Modifier.height(14.dp))
+
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                OutlinedTextField(
+                                    value = city,
+                                    onValueChange = { city = it },
+                                    label = { Text("City") },
+                                    leadingIcon = { Icon(Icons.Default.LocationCity, contentDescription = null) },
+                                    singleLine = true,
+                                    shape = RoundedCornerShape(14.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .bringIntoViewRequester(cityBringer)
+                                        .onFocusEvent { if (it.isFocused) scope.launch { delay(160); cityBringer.bringIntoView() } }
+                                        .testTag("kyc_city")
+                                )
+                                OutlinedTextField(
+                                    value = state,
+                                    onValueChange = { state = it },
+                                    label = { Text("Province / State") },
+                                    placeholder = { Text("Punjab") },
+                                    singleLine = true,
+                                    shape = RoundedCornerShape(14.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .bringIntoViewRequester(stateBringer)
+                                        .onFocusEvent { if (it.isFocused) scope.launch { delay(160); stateBringer.bringIntoView() } }
+                                        .testTag("kyc_state")
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            OutlinedTextField(
+                                value = street,
+                                onValueChange = { street = it },
+                                label = { Text("Street / Sector / Block") },
+                                singleLine = true,
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .bringIntoViewRequester(streetBringer)
+                                    .onFocusEvent { if (it.isFocused) scope.launch { delay(160); streetBringer.bringIntoView() } }
+                                    .testTag("kyc_street")
+                            )
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            OutlinedTextField(
+                                value = address,
+                                onValueChange = { address = it },
+                                label = { Text("Full Address Line 1") },
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .bringIntoViewRequester(addrBringer)
+                                    .onFocusEvent { if (it.isFocused) scope.launch { delay(160); addrBringer.bringIntoView() } }
+                                    .testTag("kyc_address")
+                            )
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            OutlinedTextField(
+                                value = address2,
+                                onValueChange = { address2 = it },
+                                label = { Text("Address Line 2 (Optional)") },
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .bringIntoViewRequester(addr2Bringer)
+                                    .onFocusEvent { if (it.isFocused) scope.launch { delay(160); addr2Bringer.bringIntoView() } }
+                            )
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            OutlinedTextField(
+                                value = zipCode,
+                                onValueChange = { raw -> zipCode = raw.filter { it.isDigit() }.take(5) },
+                                label = { Text("5-Digit Postal / Zip Code") },
+                                placeholder = { Text("54000") },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                singleLine = true,
+                                isError = zipCode.isNotEmpty() && zipCode.length != 5,
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .bringIntoViewRequester(zipBringer)
+                                    .onFocusEvent { if (it.isFocused) scope.launch { delay(160); zipBringer.bringIntoView() } }
+                                    .testTag("kyc_zip")
                             )
                         }
+                    }
 
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        OutlinedTextField(
-                            value = street,
-                            onValueChange = { street = it },
-                            label = { Text("Street / Sector / Block") },
-                            singleLine = true,
-                            shape = RoundedCornerShape(14.dp),
+                    Spacer(modifier = Modifier.height(18.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        OutlinedButton(
+                            onClick = { step = 3 },
+                            shape = RoundedCornerShape(16.dp),
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .bringIntoViewRequester(streetBringer)
-                                .onFocusEvent { if (it.isFocused) scope.launch { streetBringer.bringIntoView() } }
-                                .testTag("kyc_street")
-                        )
+                                .weight(0.35f)
+                                .defaultMinSize(minHeight = 52.dp)
+                        ) { Text("Back", maxLines = 1) }
 
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        OutlinedTextField(
-                            value = address,
-                            onValueChange = { address = it },
-                            label = { Text("Full Address Line 1") },
-                            shape = RoundedCornerShape(14.dp),
+                        Button(
+                            onClick = {
+                                when {
+                                    !Formatters.isValidLocalPakistanPhone(phoneDigits) ->
+                                        onToast("Enter valid 11-digit mobile starting with 0 (e.g. 03001234567)", true)
+                                    !Regex("^3\\d{9}$").matches(whatsappDigits10) ->
+                                        onToast("Enter valid 10-digit WhatsApp after +92 (e.g. 3001234567)", true)
+                                    city.isBlank() || street.isBlank() || state.isBlank() || address.isBlank() ->
+                                        onToast("Please fill city, state, street, and address", true)
+                                    zipCode.length != 5 ->
+                                        onToast("Enter a 5-digit Pakistan postal code", true)
+                                    else -> step = 5
+                                }
+                            },
+                            shape = RoundedCornerShape(16.dp),
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .bringIntoViewRequester(addrBringer)
-                                .onFocusEvent { if (it.isFocused) scope.launch { addrBringer.bringIntoView() } }
-                                .testTag("kyc_address")
-                        )
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        OutlinedTextField(
-                            value = address2,
-                            onValueChange = { address2 = it },
-                            label = { Text("Address Line 2 (Optional)") },
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .bringIntoViewRequester(addr2Bringer)
-                                .onFocusEvent { if (it.isFocused) scope.launch { addr2Bringer.bringIntoView() } }
-                        )
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        OutlinedTextField(
-                            value = zipCode,
-                            onValueChange = { raw -> zipCode = raw.filter { it.isDigit() }.take(5) },
-                            label = { Text("5-Digit Postal / Zip Code") },
-                            placeholder = { Text("54000") },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            singleLine = true,
-                            isError = zipCode.isNotEmpty() && zipCode.length != 5,
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .bringIntoViewRequester(zipBringer)
-                                .onFocusEvent { if (it.isFocused) scope.launch { zipBringer.bringIntoView() } }
-                                .testTag("kyc_zip")
-                        )
+                                .weight(0.65f)
+                                .defaultMinSize(minHeight = 52.dp)
+                                .testTag("step4_next_button")
+                        ) {
+                            Text("Continue to Store Setup", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(18.dp))
+                // ================= STEP 5: STORE PROFILE SETUP & FINAL SUBMIT =================
+                else -> {
+                    val bannerUrl = resolveStoreMedia(shopBannerPath)
+                    val logoUrl = resolveStoreMedia(shopLogoPath)
+                    val storeNameBringer = remember { BringIntoViewRequester() }
+                    val storeSlugBringer = remember { BringIntoViewRequester() }
+                    val storeBioBringer = remember { BringIntoViewRequester() }
+                    val storeIntroBringer = remember { BringIntoViewRequester() }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OutlinedButton(
-                        onClick = { step = 1 },
-                        shape = RoundedCornerShape(16.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 14.dp),
-                        modifier = Modifier
-                            .weight(0.36f)
-                            .defaultMinSize(minHeight = 52.dp)
+                    Card(
+                        shape = RoundedCornerShape(22.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Back", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Column(modifier = Modifier.padding(18.dp)) {
+                            Text("Set Up Your Storefront", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Text(
+                                "Upload your store logo, cover banner, and brand details before submitting for review.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(14.dp))
+
+                            // Banner Picker (16:9)
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(138.dp)
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(ZulvazaNavy)
+                                    .clickable(enabled = !uploadingStoreBanner) {
+                                        bannerPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                                    }
+                                    .testTag("onboarding_store_banner")
+                            ) {
+                                if (!bannerUrl.isNullOrBlank()) {
+                                    SignedRemoteImage(url = bannerUrl, contentDescription = "Store banner", modifier = Modifier.fillMaxSize())
+                                }
+                                Surface(
+                                    color = Color.Black.copy(alpha = 0.56f),
+                                    shape = RoundedCornerShape(50),
+                                    modifier = Modifier.align(Alignment.Center)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        if (uploadingStoreBanner) {
+                                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
+                                        } else {
+                                            Icon(Icons.Default.CameraAlt, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                                        }
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = when {
+                                                uploadingStoreBanner -> "Uploading banner..."
+                                                !bannerUrl.isNullOrBlank() -> "Change cover banner"
+                                                else -> "Upload cover banner (16:9)"
+                                            },
+                                            color = Color.White,
+                                            style = MaterialTheme.typography.labelMedium
+                                        )
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(14.dp))
+
+                            // Logo Picker (1:1)
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(74.dp)
+                                        .clip(CircleShape)
+                                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                                        .border(2.dp, ZulvazaOrange, CircleShape)
+                                        .clickable(enabled = !uploadingStoreLogo) {
+                                            logoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                                        }
+                                        .testTag("onboarding_store_logo"),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (!logoUrl.isNullOrBlank()) {
+                                        SignedRemoteImage(url = logoUrl, contentDescription = "Store logo", modifier = Modifier.fillMaxSize())
+                                    } else {
+                                        Icon(Icons.Default.Storefront, contentDescription = null, tint = ZulvazaOrange, modifier = Modifier.size(32.dp))
+                                    }
+                                    if (uploadingStoreLogo) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .background(Color.Black.copy(alpha = 0.45f)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp, color = Color.White)
+                                        }
+                                    }
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("Store Logo", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                                    Text(
+                                        text = if (!logoUrl.isNullOrBlank()) "Logo selected • Tap to change & crop" else "Tap circle to pick & crop logo (1:1)",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            OutlinedTextField(
+                                value = shopName,
+                                onValueChange = {
+                                    shopName = it
+                                    if (shopSlug.isBlank()) shopSlug = Formatters.slugify(it)
+                                },
+                                label = { Text("Store Name") },
+                                singleLine = true,
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .bringIntoViewRequester(storeNameBringer)
+                                    .onFocusEvent { if (it.isFocused) scope.launch { delay(160); storeNameBringer.bringIntoView() } }
+                                    .testTag("onboarding_store_name")
+                            )
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            OutlinedTextField(
+                                value = shopSlug,
+                                onValueChange = { shopSlug = it.lowercase().filter { c -> c.isLetterOrDigit() || c == '-' || c == '_' } },
+                                label = { Text("Store @handle") },
+                                prefix = { Text("@") },
+                                singleLine = true,
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .bringIntoViewRequester(storeSlugBringer)
+                                    .onFocusEvent { if (it.isFocused) scope.launch { delay(160); storeSlugBringer.bringIntoView() } }
+                                    .testTag("onboarding_store_slug")
+                            )
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            OutlinedTextField(
+                                value = shopBio,
+                                onValueChange = { shopBio = it },
+                                label = { Text("Short Store Bio") },
+                                minLines = 2,
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .bringIntoViewRequester(storeBioBringer)
+                                    .onFocusEvent { if (it.isFocused) scope.launch { delay(160); storeBioBringer.bringIntoView() } }
+                            )
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            OutlinedTextField(
+                                value = shopIntro,
+                                onValueChange = { shopIntro = it },
+                                label = { Text("Store Description (Optional)") },
+                                minLines = 3,
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .bringIntoViewRequester(storeIntroBringer)
+                                    .onFocusEvent { if (it.isFocused) scope.launch { delay(160); storeIntroBringer.bringIntoView() } }
+                            )
+                        }
                     }
-                    Button(
-                        onClick = {
-                            when {
-                                city.isBlank() || street.isBlank() || state.isBlank() || address.isBlank() -> {
-                                    onToast("Please fill city, state, street, and address", true)
-                                }
-                                zipCode.length != 5 -> {
-                                    onToast("Enter a 5-digit Pakistan postal code", true)
-                                }
-                                else -> {
-                                    onSubmit(
-                                        SellerIdentityDetails(
+
+                    Spacer(modifier = Modifier.height(18.dp))
+
+                    val phoneE164 = Formatters.normalizePakistanPhoneToE164(phoneDigits)
+                    val whatsappE164 = "+92$whatsappDigits10"
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        OutlinedButton(
+                            onClick = { step = 4 },
+                            shape = RoundedCornerShape(16.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 14.dp),
+                            modifier = Modifier
+                                .weight(0.35f)
+                                .defaultMinSize(minHeight = 52.dp)
+                        ) {
+                            Text("Back", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        Button(
+                            onClick = {
+                                when {
+                                    shopName.isBlank() -> onToast("Enter your store name", true)
+                                    shopSlug.isBlank() -> onToast("Enter your store @handle", true)
+                                    else -> {
+                                        val finalDetails = SellerIdentityDetails(
                                             fullName = fullName.trim(),
                                             cnic = cnicDigits,
                                             gender = gender,
+                                            dateOfBirth = dateOfBirth,
                                             issueDate = issueDate,
                                             expiryDate = expiryDate,
                                             cnicFront = cnicFrontPath,
                                             cnicBack = cnicBackPath,
+                                            facePhoto = facePhotoPath,
                                             phone = phoneE164,
                                             whatsapp = whatsappE164,
                                             city = city.trim(),
@@ -760,28 +1455,53 @@ fun VerificationScreen(
                                             latitude = latitude,
                                             longitude = longitude
                                         )
-                                    )
+                                        val finalStore = SellerStore(
+                                            sellerId = store?.sellerId.orEmpty(),
+                                            shopName = shopName.trim(),
+                                            slug = shopSlug.trim(),
+                                            bio = shopBio.trim(),
+                                            introduction = shopIntro.trim(),
+                                            logoPath = shopLogoPath,
+                                            bannerPath = shopBannerPath,
+                                            socialProfiles = store?.socialProfiles ?: emptyList()
+                                        )
+                                        onSubmit(finalDetails, finalStore)
+                                    }
                                 }
+                            },
+                            enabled = !isBusy && !uploadingStoreLogo && !uploadingStoreBanner,
+                            shape = RoundedCornerShape(16.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 14.dp),
+                            modifier = Modifier
+                                .weight(0.65f)
+                                .defaultMinSize(minHeight = 52.dp)
+                                .testTag("kyc_submit_button")
+                        ) {
+                            if (isBusy) {
+                                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = Color.White)
+                            } else {
+                                Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Submit Verification", maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
-                        },
-                        enabled = !isBusy,
-                        shape = RoundedCornerShape(16.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 14.dp),
-                        modifier = Modifier
-                            .weight(0.64f)
-                            .defaultMinSize(minHeight = 52.dp)
-                            .testTag("kyc_submit_button")
-                    ) {
-                        if (isBusy) {
-                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = Color.White)
-                        } else {
-                            Text("Submit Verification", maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
                 }
             }
+
             Spacer(modifier = Modifier.height(24.dp))
         }
+    }
+}
+
+private fun parseIsoDateToMillis(iso: String): Long? {
+    if (iso.isBlank()) return null
+    return try {
+        val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+        sdf.timeZone = TimeZone.getTimeZone("UTC")
+        sdf.parse(iso)?.time
+    } catch (_: Exception) {
+        null
     }
 }
 
@@ -796,12 +1516,13 @@ private fun DateSelectorField(
         shape = RoundedCornerShape(14.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
         modifier = modifier
+            .defaultMinSize(minHeight = 54.dp)
             .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(14.dp))
             .clip(RoundedCornerShape(14.dp))
             .clickable(onClick = onClick)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 14.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
@@ -826,76 +1547,79 @@ private fun DateSelectorField(
 }
 
 @Composable
-private fun CnicCaptureTile(
+private fun CnicStepPreviewTile(
     title: String,
-    path: String,
+    localBytes: ByteArray?,
     signedUrl: String?,
+    hasPath: Boolean,
     isUploading: Boolean,
-    onClick: () -> Unit,
+    onRescan: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-        modifier = modifier
-            .aspectRatio(85.6f / 54f)
-            .border(
-                width = 1.5.dp,
-                color = if (path.isNotBlank()) SuccessGreen else ZulvazaOrange.copy(alpha = 0.6f),
-                shape = RoundedCornerShape(16.dp)
-            )
-            .clip(RoundedCornerShape(16.dp))
-            .clickable(enabled = !isUploading, onClick = onClick)
-    ) {
-        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-            if (isUploading) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text("Uploading...", style = MaterialTheme.typography.labelSmall)
-                }
-            } else if (path.isNotBlank() && !signedUrl.isNullOrBlank()) {
-                SignedRemoteImage(
-                    url = signedUrl,
-                    contentDescription = title,
-                    modifier = Modifier.fillMaxSize()
+    val localBmp = remember(localBytes) {
+        localBytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+    }
+    Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(85.6f / 54f)
+                .border(
+                    width = 1.5.dp,
+                    color = if (hasPath || localBmp != null) SuccessGreen else ZulvazaOrange.copy(alpha = 0.6f),
+                    shape = RoundedCornerShape(14.dp)
                 )
-                Surface(
-                    color = SuccessGreen,
-                    shape = CircleShape,
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(6.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.CheckCircle,
-                        contentDescription = "Captured",
-                        tint = Color.White,
-                        modifier = Modifier
-                            .padding(2.dp)
-                            .size(16.dp)
-                    )
+                .clip(RoundedCornerShape(14.dp))
+                .clickable(enabled = !isUploading, onClick = onRescan)
+        ) {
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                when {
+                    isUploading && localBmp == null -> {
+                        CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                    }
+                    localBmp != null -> {
+                        Image(
+                            bitmap = localBmp.asImageBitmap(),
+                            contentDescription = title,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                    hasPath && !signedUrl.isNullOrBlank() -> {
+                        SignedRemoteImage(
+                            url = signedUrl,
+                            contentDescription = title,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                    else -> {
+                        Icon(Icons.Default.Badge, contentDescription = null, tint = ZulvazaOrange)
+                    }
                 }
-            } else {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.padding(8.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.CameraAlt,
-                        contentDescription = null,
-                        tint = ZulvazaOrange,
-                        modifier = Modifier.size(26.dp)
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(title, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        if (path.isNotBlank()) "Captured ✓" else "Auto-camera",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (path.isNotBlank()) SuccessGreen else MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                if (hasPath || localBmp != null) {
+                    Surface(
+                        color = SuccessGreen,
+                        shape = CircleShape,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = "Captured",
+                            tint = Color.White,
+                            modifier = Modifier
+                                .padding(2.dp)
+                                .size(14.dp)
+                        )
+                    }
                 }
             }
         }
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(title, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+        Text("Tap to rescan", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

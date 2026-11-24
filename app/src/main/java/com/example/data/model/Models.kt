@@ -60,10 +60,12 @@ data class SellerIdentityDetails(
     val fullName: String = "",
     val cnic: String = "",
     val gender: String = "male",
+    val dateOfBirth: String = "",
     val issueDate: String = "",
     val expiryDate: String = "",
     val cnicFront: String = "",
     val cnicBack: String = "",
+    val facePhoto: String = "",
     val phone: String = "",
     val whatsapp: String = "",
     val city: String = "",
@@ -213,4 +215,9 @@ data class CnicCaptureResult(
     val extractedText: String = "",
     val detectedCnicDigits: String? = null,
     val detectedDates: List<String> = emptyList()
+)
+
+data class CnicDualScanResult(
+    val front: CnicCaptureResult,
+    val back: CnicCaptureResult
 )

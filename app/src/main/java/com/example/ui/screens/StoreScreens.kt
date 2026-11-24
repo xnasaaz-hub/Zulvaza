@@ -40,10 +40,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Storefront
-import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -97,10 +97,14 @@ fun StoreProfileScreen(
     store: SellerStore?,
     products: List<ProductItem>,
     resolveStoreMedia: (String?) -> String?,
+    onUploadStoreMediaBytes: suspend (ByteArray, String, String, String?, (Float) -> Unit) -> String,
+    onSaveStoreMedia: (Boolean, String) -> Unit,
+    onDeleteStoreMedia: (Boolean) -> Unit,
     onEditStore: () -> Unit,
     onToast: (String, Boolean) -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val activeSocials = store?.socialProfiles?.filter { it.active && it.url.isNotBlank() }.orEmpty()
     val approvedCount = products.count { it.status == ProductStatus.APPROVED }
     val totalSales = products.sumOf { it.sales }
@@ -111,13 +115,194 @@ fun StoreProfileScreen(
         "https://zulvaza.com"
     }
 
+    var uploadingLogo by remember { mutableStateOf(false) }
+    var uploadingBanner by remember { mutableStateOf(false) }
+    var previewMediaTarget by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
+    var cropMediaTarget by remember { mutableStateOf<Pair<Boolean, Uri>?>(null) }
+
+    val logoPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            cropMediaTarget = true to uri
+        }
+    }
+
+    val bannerPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            cropMediaTarget = false to uri
+        }
+    }
+
+    if (cropMediaTarget != null) {
+        val (isLogo, pickedUri) = cropMediaTarget!!
+        com.example.ui.components.ImageCropDialog(
+            imageUri = pickedUri,
+            isCircularLogo = isLogo,
+            title = if (isLogo) "Crop & Adjust Store Logo" else "Crop & Adjust Cover Banner",
+            onCropped = { croppedBytes ->
+                cropMediaTarget = null
+                scope.launch {
+                    if (isLogo) uploadingLogo = true else uploadingBanner = true
+                    try {
+                        val uploadedPath = onUploadStoreMediaBytes(
+                            croppedBytes,
+                            "jpg",
+                            "image/jpeg",
+                            null
+                        ) {}
+                        onSaveStoreMedia(isLogo, uploadedPath)
+                    } catch (e: Exception) {
+                        onToast(e.message ?: "Upload failed", true)
+                    } finally {
+                        uploadingLogo = false
+                        uploadingBanner = false
+                    }
+                }
+            },
+            onCancel = { cropMediaTarget = null }
+        )
+    }
+
+    if (previewMediaTarget != null) {
+        val (isLogo, mediaUrl) = previewMediaTarget!!
+        Dialog(
+            onDismissRequest = { previewMediaTarget = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                shape = RoundedCornerShape(24.dp),
+                color = Color(0xFF0F172A),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.1f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(18.dp)
+            ) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (isLogo) "Store Logo" else "Cover Banner",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold
+                        )
+                        IconButton(
+                            onClick = { previewMediaTarget = null },
+                            modifier = Modifier
+                                .size(48.dp)
+                                .background(Color.White.copy(alpha = 0.08f), CircleShape)
+                                .testTag("close_media_preview_button")
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = "Close preview", tint = Color.White)
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Box(
+                        modifier = Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        SignedRemoteImage(
+                            url = mediaUrl,
+                            contentDescription = if (isLogo) "Store Logo" else "Store Banner",
+                            contentScale = ContentScale.Crop,
+                            modifier = if (isLogo) {
+                                Modifier
+                                    .size(220.dp)
+                                    .clip(CircleShape)
+                                    .border(2.dp, ZulvazaOrange, CircleShape)
+                                    .background(Color(0xFF1E293B))
+                            } else {
+                                Modifier
+                                    .fillMaxWidth()
+                                    .aspectRatio(16f / 9f)
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .border(1.5.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(16.dp))
+                                    .background(Color(0xFF1E293B))
+                            }
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(18.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                previewMediaTarget = null
+                                onDeleteStoreMedia(isLogo)
+                            },
+                            shape = RoundedCornerShape(14.dp),
+                            border = BorderStroke(1.dp, Color(0xFFF87171)),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .defaultMinSize(minHeight = 48.dp)
+                                .testTag(if (isLogo) "delete_store_logo_button" else "delete_store_banner_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.DeleteOutline,
+                                contentDescription = null,
+                                tint = Color(0xFFF87171),
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Delete",
+                                color = Color(0xFFF87171),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Button(
+                            onClick = {
+                                previewMediaTarget = null
+                                if (isLogo) {
+                                    logoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                                } else {
+                                    bannerPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                                }
+                            },
+                            shape = RoundedCornerShape(14.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .defaultMinSize(minHeight = 48.dp)
+                                .testTag(if (isLogo) "change_store_logo_button" else "change_store_banner_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CameraAlt,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Change",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    val bannerUrl = resolveStoreMedia(store?.bannerPath)
+    val logoUrl = resolveStoreMedia(store?.logoPath)
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
             .verticalScroll(rememberScrollState())
     ) {
-        // Cover Banner + Overlapping Logo
+        // Cover Banner + Overlapping Interactive Logo
         Box(modifier = Modifier.fillMaxWidth()) {
             Box(
                 modifier = Modifier
@@ -126,8 +311,15 @@ fun StoreProfileScreen(
                     .background(
                         Brush.linearGradient(listOf(ZulvazaNavy, ZulvazaOrange))
                     )
+                    .clickable(enabled = !uploadingBanner) {
+                        if (!bannerUrl.isNullOrBlank()) {
+                            previewMediaTarget = false to bannerUrl
+                        } else {
+                            bannerPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        }
+                    }
+                    .testTag("store_profile_banner_box")
             ) {
-                val bannerUrl = resolveStoreMedia(store?.bannerPath)
                 if (!bannerUrl.isNullOrBlank()) {
                     SignedRemoteImage(
                         url = bannerUrl,
@@ -143,41 +335,110 @@ fun StoreProfileScreen(
                         modifier = Modifier.fillMaxSize()
                     )
                 }
+
+                Surface(
+                    color = Color.Black.copy(alpha = 0.56f),
+                    shape = RoundedCornerShape(50),
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (uploadingBanner) {
+                            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = Color.White)
+                        } else {
+                            Icon(Icons.Default.CameraAlt, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp))
+                        }
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = when {
+                                uploadingBanner -> "Uploading..."
+                                !bannerUrl.isNullOrBlank() -> "Edit Cover"
+                                else -> "Add Cover"
+                            },
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
             }
 
-            // Round Logo with Gradient Ring
+            // Round Logo with Gradient Ring + Tap Camera Badge
             Box(
                 modifier = Modifier
                     .padding(start = 20.dp)
                     .offset(y = 132.dp)
                     .size(94.dp)
-                    .clip(CircleShape)
-                    .background(
-                        Brush.sweepGradient(listOf(ZulvazaOrange, ZulvazaNavy, ZulvazaOrange))
-                    )
-                    .padding(4.dp)
             ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(CircleShape)
+                        .background(
+                            Brush.sweepGradient(listOf(ZulvazaOrange, ZulvazaNavy, ZulvazaOrange))
+                        )
+                        .padding(4.dp)
+                        .clip(CircleShape)
+                        .clickable(enabled = !uploadingLogo) {
+                            if (!logoUrl.isNullOrBlank()) {
+                                previewMediaTarget = true to logoUrl
+                            } else {
+                                logoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                            }
+                        }
+                        .testTag("store_profile_logo_circle")
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surface,
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        when {
+                            uploadingLogo -> {
+                                Box(contentAlignment = Alignment.Center) {
+                                    CircularProgressIndicator(modifier = Modifier.size(26.dp), strokeWidth = 2.5.dp, color = ZulvazaOrange)
+                                }
+                            }
+                            !logoUrl.isNullOrBlank() -> {
+                                SignedRemoteImage(
+                                    url = logoUrl,
+                                    contentDescription = "Store logo",
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                            else -> {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Default.Storefront,
+                                        contentDescription = "Upload store logo",
+                                        tint = ZulvazaOrange,
+                                        modifier = Modifier.size(40.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Surface(
                     shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surface,
-                    modifier = Modifier.fillMaxSize()
+                    color = ZulvazaOrange,
+                    border = BorderStroke(2.dp, MaterialTheme.colorScheme.background),
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .size(30.dp)
                 ) {
-                    val logoUrl = resolveStoreMedia(store?.logoPath)
-                    if (!logoUrl.isNullOrBlank()) {
-                        SignedRemoteImage(
-                            url = logoUrl,
-                            contentDescription = "Store logo",
-                            modifier = Modifier.fillMaxSize()
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Default.CameraAlt,
+                            contentDescription = "Edit logo",
+                            tint = Color.White,
+                            modifier = Modifier.size(15.dp)
                         )
-                    } else {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = Icons.Default.Storefront,
-                                contentDescription = null,
-                                tint = ZulvazaOrange,
-                                modifier = Modifier.size(40.dp)
-                            )
-                        }
                     }
                 }
             }
@@ -370,9 +631,6 @@ private fun StoreStatColumn(value: String, label: String) {
 fun EditStoreSheetContent(
     initialStore: SellerStore?,
     isBusy: Boolean,
-    resolveStoreMedia: (String?) -> String?,
-    onUploadStoreMediaBytes: suspend (ByteArray, String, String, String?, (Float) -> Unit) -> String,
-    onDeleteStoreMedia: (Boolean) -> Unit,
     onSaveStore: (SellerStore, () -> Unit) -> Unit,
     onToast: (String, Boolean) -> Unit,
     onDismiss: () -> Unit
@@ -383,177 +641,15 @@ fun EditStoreSheetContent(
     var slug by remember(initialStore) { mutableStateOf(initialStore?.slug ?: "") }
     var bio by remember(initialStore) { mutableStateOf(initialStore?.bio ?: "") }
     var introduction by remember(initialStore) { mutableStateOf(initialStore?.introduction ?: "") }
-    var logoPath by remember(initialStore) { mutableStateOf(initialStore?.logoPath) }
-    var bannerPath by remember(initialStore) { mutableStateOf(initialStore?.bannerPath) }
+
+    val preservedLogoPath = initialStore?.logoPath
+    val preservedBannerPath = initialStore?.bannerPath
     val preservedSocialProfiles = initialStore?.socialProfiles ?: emptyList()
-
-    var uploadingLogo by remember { mutableStateOf(false) }
-    var uploadingBanner by remember { mutableStateOf(false) }
-
-    // Pair(isLogo, mediaUrl) for preview dialog with Delete & Change buttons
-    var previewMediaTarget by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
-    // Pair(isLogo, pickedUri) for interactive Crop & Edit modal
-    var cropMediaTarget by remember { mutableStateOf<Pair<Boolean, Uri>?>(null) }
 
     val nameRequester = remember { BringIntoViewRequester() }
     val slugRequester = remember { BringIntoViewRequester() }
     val bioRequester = remember { BringIntoViewRequester() }
     val introRequester = remember { BringIntoViewRequester() }
-
-    val logoPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
-    ) { uri ->
-        if (uri != null) {
-            cropMediaTarget = true to uri
-        }
-    }
-
-    val bannerPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
-    ) { uri ->
-        if (uri != null) {
-            cropMediaTarget = false to uri
-        }
-    }
-
-    // Interactive Crop & Edit Modal before uploading logo or banner
-    if (cropMediaTarget != null) {
-        val (isLogo, pickedUri) = cropMediaTarget!!
-        com.example.ui.components.ImageCropDialog(
-            imageUri = pickedUri,
-            isCircularLogo = isLogo,
-            title = if (isLogo) "Crop & Adjust Store Logo" else "Crop & Adjust Cover Banner",
-            onCropped = { croppedBytes ->
-                cropMediaTarget = null
-                scope.launch {
-                    if (isLogo) uploadingLogo = true else uploadingBanner = true
-                    try {
-                        val uploadedPath = onUploadStoreMediaBytes(
-                            croppedBytes,
-                            "jpg",
-                            "image/jpeg",
-                            null
-                        ) {}
-                        if (isLogo) {
-                            logoPath = uploadedPath
-                            onToast("Store logo cropped & uploaded", false)
-                        } else {
-                            bannerPath = uploadedPath
-                            onToast("Store banner cropped & uploaded", false)
-                        }
-                    } catch (e: Exception) {
-                        onToast(e.message ?: "Upload failed", true)
-                    } finally {
-                        uploadingLogo = false
-                        uploadingBanner = false
-                    }
-                }
-            },
-            onCancel = { cropMediaTarget = null }
-        )
-    }
-
-    // Preview Modal when tapping existing Logo or Banner (with Delete + Change buttons)
-    if (previewMediaTarget != null) {
-        val (isLogo, mediaUrl) = previewMediaTarget!!
-        Dialog(
-            onDismissRequest = { previewMediaTarget = null },
-            properties = DialogProperties(usePlatformDefaultWidth = false)
-        ) {
-            Surface(
-                shape = RoundedCornerShape(24.dp),
-                color = Color(0xFF0F172A),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp)
-            ) {
-                Column(modifier = Modifier.padding(18.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = if (isLogo) "Store Logo Preview" else "Cover Banner Preview",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold
-                        )
-                        IconButton(onClick = { previewMediaTarget = null }) {
-                            Icon(Icons.Default.Close, contentDescription = "Close preview", tint = Color.White)
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(12.dp))
-                    SignedRemoteImage(
-                        url = mediaUrl,
-                        contentDescription = if (isLogo) "Store Logo" else "Store Banner",
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .aspectRatio(if (isLogo) 1f else 16f / 9f)
-                            .clip(if (isLogo) CircleShape else RoundedCornerShape(16.dp))
-                            .background(Color(0xFF1E293B))
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = {
-                                previewMediaTarget = null
-                                if (isLogo) {
-                                    logoPath = null
-                                } else {
-                                    bannerPath = null
-                                }
-                                onDeleteStoreMedia(isLogo)
-                            },
-                            shape = RoundedCornerShape(14.dp),
-                            border = BorderStroke(1.dp, Color(0xFFF87171)),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .defaultMinSize(minHeight = 48.dp)
-                                .testTag(if (isLogo) "delete_store_logo_button" else "delete_store_banner_button")
-                        ) {
-                            Text(
-                                text = "Delete",
-                                color = Color(0xFFF87171),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        Button(
-                            onClick = {
-                                previewMediaTarget = null
-                                if (isLogo) {
-                                    logoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                                } else {
-                                    bannerPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                                }
-                            },
-                            shape = RoundedCornerShape(14.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .defaultMinSize(minHeight = 48.dp)
-                                .testTag(if (isLogo) "change_store_logo_button" else "change_store_banner_button")
-                        ) {
-                            Text(
-                                text = "Change",
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    val bannerUrl = resolveStoreMedia(bannerPath)
-    val logoUrl = resolveStoreMedia(logoPath)
 
     Column(
         modifier = Modifier
@@ -569,115 +665,18 @@ fun EditStoreSheetContent(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("Edit Store Profile", style = MaterialTheme.typography.headlineSmall)
+            Text("Edit Store Details", style = MaterialTheme.typography.headlineSmall)
             IconButton(onClick = onDismiss) {
                 Icon(Icons.Default.Close, contentDescription = "Close")
             }
         }
 
-        Spacer(modifier = Modifier.height(10.dp))
-
-        // Tap Banner -> Preview (with Delete/Change) if set, or Pick + Crop if empty
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(148.dp)
-                .clip(RoundedCornerShape(18.dp))
-                .background(ZulvazaNavy)
-                .clickable(enabled = !uploadingBanner) {
-                    if (!bannerUrl.isNullOrBlank()) {
-                        previewMediaTarget = false to bannerUrl
-                    } else {
-                        bannerPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                    }
-                }
-                .testTag("edit_store_banner_box")
-        ) {
-            if (!bannerUrl.isNullOrBlank()) {
-                SignedRemoteImage(url = bannerUrl, contentDescription = "Cover Banner", modifier = Modifier.fillMaxSize())
-            }
-            Surface(
-                color = Color.Black.copy(alpha = 0.56f),
-                shape = RoundedCornerShape(50),
-                modifier = Modifier.align(Alignment.Center)
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (uploadingBanner) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
-                    } else {
-                        Icon(Icons.Default.CameraAlt, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
-                    }
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = when {
-                            uploadingBanner -> "Uploading banner..."
-                            !bannerUrl.isNullOrBlank() -> "Tap banner to preview, delete or change"
-                            else -> "Upload & crop cover banner"
-                        },
-                        color = Color.White,
-                        style = MaterialTheme.typography.labelMedium
-                    )
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(14.dp))
-
-        // Tap Logo Circle -> Preview (with Delete/Change) if set, or Pick + Crop if empty
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(76.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .border(2.dp, ZulvazaOrange, CircleShape)
-                    .clickable(enabled = !uploadingLogo) {
-                        if (!logoUrl.isNullOrBlank()) {
-                            previewMediaTarget = true to logoUrl
-                        } else {
-                            logoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                        }
-                    }
-                    .testTag("edit_store_logo_circle"),
-                contentAlignment = Alignment.Center
-            ) {
-                if (!logoUrl.isNullOrBlank()) {
-                    SignedRemoteImage(url = logoUrl, contentDescription = "Store Logo", modifier = Modifier.fillMaxSize())
-                }
-                if (uploadingLogo) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(Color.Black.copy(alpha = 0.45f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp, color = Color.White)
-                    }
-                } else if (logoUrl.isNullOrBlank()) {
-                    Icon(Icons.Default.CameraAlt, contentDescription = "Upload logo", tint = ZulvazaOrange)
-                }
-            }
-            Spacer(modifier = Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text("Store Logo", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    if (!logoUrl.isNullOrBlank()) {
-                        "Tap logo to preview, delete, or change & crop"
-                    } else {
-                        "Tap circle to pick & crop square store logo"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            text = "Tap your logo or cover banner directly on My Store to preview, crop, change, or delete media.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
         Spacer(modifier = Modifier.height(14.dp))
 
         Card(
@@ -756,8 +755,8 @@ fun EditStoreSheetContent(
                                 slug = slug.trim(),
                                 bio = bio.trim(),
                                 introduction = introduction.trim(),
-                                logoPath = logoPath,
-                                bannerPath = bannerPath,
+                                logoPath = preservedLogoPath,
+                                bannerPath = preservedBannerPath,
                                 socialProfiles = preservedSocialProfiles
                             ),
                             onDismiss
@@ -765,7 +764,7 @@ fun EditStoreSheetContent(
                     }
                 }
             },
-            enabled = !isBusy && !uploadingLogo && !uploadingBanner,
+            enabled = !isBusy,
             shape = RoundedCornerShape(16.dp),
             modifier = Modifier
                 .fillMaxWidth()

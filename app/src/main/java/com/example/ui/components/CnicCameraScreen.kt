@@ -15,9 +15,12 @@ import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
+import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
@@ -29,14 +32,18 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.scaleIn
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -45,18 +52,25 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DocumentScanner
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
+import androidx.compose.material.icons.filled.FlipCameraAndroid
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -68,6 +82,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -86,17 +101,25 @@ import androidx.compose.ui.graphics.ClipOp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.data.model.CnicCaptureResult
+import com.example.data.model.CnicDualScanResult
 import com.example.ui.theme.SuccessGreen
 import com.example.ui.theme.ZulvazaOrange
 import com.example.util.CnicMatchValidator
@@ -109,11 +132,531 @@ import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
+import kotlin.math.max
 import kotlin.math.roundToInt
+
+private enum class DualScanPhase {
+    SCAN_FRONT,
+    FLIP_ANIMATION,
+    SCAN_BACK,
+    REVIEW
+}
+
+@Composable
+fun CnicDualScannerScreen(
+    initialFront: CnicCaptureResult? = null,
+    initialBack: CnicCaptureResult? = null,
+    startOnSide: String? = null, // null = normal flow, "Front" or "Back" = single rescan
+    onCompleted: (CnicDualScanResult) -> Unit,
+    onClose: () -> Unit
+) {
+    var frontResult by remember { mutableStateOf(initialFront) }
+    var backResult by remember { mutableStateOf(initialBack) }
+    var phase by remember {
+        mutableStateOf(
+            when {
+                startOnSide.equals("Back", ignoreCase = true) -> DualScanPhase.SCAN_BACK
+                startOnSide.equals("Front", ignoreCase = true) -> DualScanPhase.SCAN_FRONT
+                initialFront != null && initialBack != null -> DualScanPhase.REVIEW
+                else -> DualScanPhase.SCAN_FRONT
+            }
+        )
+    }
+
+    BackHandler {
+        when (phase) {
+            DualScanPhase.REVIEW -> onClose()
+            else -> {
+                if (frontResult != null && backResult != null) {
+                    phase = DualScanPhase.REVIEW
+                } else {
+                    onClose()
+                }
+            }
+        }
+    }
+
+    when (phase) {
+        DualScanPhase.SCAN_FRONT -> {
+            key("scan_front") {
+                CnicLiveCameraOverlayScreen(
+                    sideLabel = "Front",
+                    stepBadge = "Step 1 of 2 • Front Side",
+                    onCaptured = { captured ->
+                        frontResult = captured
+                        phase = if (backResult != null && startOnSide != null) {
+                            DualScanPhase.REVIEW
+                        } else {
+                            DualScanPhase.FLIP_ANIMATION
+                        }
+                    },
+                    onClose = {
+                        if (frontResult != null && backResult != null) {
+                            phase = DualScanPhase.REVIEW
+                        } else {
+                            onClose()
+                        }
+                    }
+                )
+            }
+        }
+
+        DualScanPhase.FLIP_ANIMATION -> {
+            CnicFlipTransitionScreen(
+                frontResult = frontResult,
+                onFinished = { phase = DualScanPhase.SCAN_BACK },
+                onClose = onClose
+            )
+        }
+
+        DualScanPhase.SCAN_BACK -> {
+            key("scan_back") {
+                CnicLiveCameraOverlayScreen(
+                    sideLabel = "Back",
+                    stepBadge = "Step 2 of 2 • Back Side",
+                    onCaptured = { captured ->
+                        backResult = captured
+                        phase = DualScanPhase.REVIEW
+                    },
+                    onClose = {
+                        if (frontResult != null && backResult != null) {
+                            phase = DualScanPhase.REVIEW
+                        } else {
+                            onClose()
+                        }
+                    }
+                )
+            }
+        }
+
+        DualScanPhase.REVIEW -> {
+            val front = frontResult
+            val back = backResult
+            if (front != null && back != null) {
+                CnicDualReviewScreen(
+                    front = front,
+                    back = back,
+                    onRescanFront = { phase = DualScanPhase.SCAN_FRONT },
+                    onRescanBack = { phase = DualScanPhase.SCAN_BACK },
+                    onUseNow = { onCompleted(CnicDualScanResult(front = front, back = back)) },
+                    onClose = onClose
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CnicFlipTransitionScreen(
+    frontResult: CnicCaptureResult?,
+    onFinished: () -> Unit,
+    onClose: () -> Unit
+) {
+    var flipStarted by remember { mutableStateOf(false) }
+    val density = LocalDensity.current.density
+
+    val rotationYDeg by animateFloatAsState(
+        targetValue = if (flipStarted) 180f else 0f,
+        animationSpec = tween(durationMillis = 1050, easing = FastOutSlowInEasing),
+        label = "cnicCardFlipRotation"
+    )
+
+    val frontBitmap = remember(frontResult) {
+        frontResult?.jpegBytes?.let { bytes ->
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        delay(260)
+        flipStarted = true
+        delay(1450)
+        onFinished()
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF060B14))
+            .systemBarsPadding()
+            .padding(24.dp)
+    ) {
+        IconButton(
+            onClick = onClose,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .size(48.dp)
+                .background(Color.White.copy(alpha = 0.08f), CircleShape)
+        ) {
+            Icon(Icons.Default.Close, contentDescription = "Close scanner", tint = Color.White)
+        }
+
+        Column(
+            modifier = Modifier
+                .align(Alignment.Center)
+                .fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Surface(
+                color = SuccessGreen.copy(alpha = 0.16f),
+                shape = RoundedCornerShape(50),
+                border = BorderStroke(1.dp, SuccessGreen.copy(alpha = 0.5f))
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        tint = SuccessGreen,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Front Scanned • Flip Card to Back",
+                        color = SuccessGreen,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(26.dp))
+
+            // 3D Animated Flipping Card
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(0.88f)
+                    .aspectRatio(85.6f / 54f)
+                    .graphicsLayer {
+                        rotationY = rotationYDeg
+                        cameraDistance = 12f * density
+                    }
+            ) {
+                if (rotationYDeg <= 90f) {
+                    // Front Face
+                    Surface(
+                        shape = RoundedCornerShape(18.dp),
+                        border = BorderStroke(2.5.dp, SuccessGreen),
+                        color = Color(0xFF0F172A),
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            if (frontBitmap != null) {
+                                Image(
+                                    bitmap = frontBitmap.asImageBitmap(),
+                                    contentDescription = "Scanned CNIC front",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                            Surface(
+                                color = Color.Black.copy(alpha = 0.65f),
+                                shape = RoundedCornerShape(50),
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .padding(bottom = 10.dp)
+                            ) {
+                                Text(
+                                    text = "CNIC Front Captured",
+                                    color = Color.White,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    // Back Face (counter-rotated 180° so content isn't mirrored)
+                    Surface(
+                        shape = RoundedCornerShape(18.dp),
+                        border = BorderStroke(2.5.dp, ZulvazaOrange),
+                        color = Color(0xFF131D33),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer { rotationY = 180f }
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(18.dp),
+                            verticalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "CNIC BACK SIDE",
+                                    color = ZulvazaOrange,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Icon(
+                                    imageVector = Icons.Default.FlipCameraAndroid,
+                                    contentDescription = null,
+                                    tint = ZulvazaOrange,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth(0.75f)
+                                        .height(10.dp)
+                                        .clip(RoundedCornerShape(5.dp))
+                                        .background(Color.White.copy(alpha = 0.22f))
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth(0.55f)
+                                        .height(10.dp)
+                                        .clip(RoundedCornerShape(5.dp))
+                                        .background(Color.White.copy(alpha = 0.16f))
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "QR / Address & Signature Side",
+                                    color = Color.White.copy(alpha = 0.72f),
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = Color.White.copy(alpha = 0.16f),
+                                    modifier = Modifier.size(34.dp)
+                                ) {}
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Text(
+                text = "Turn your CNIC to the Back side",
+                color = Color.White,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = "Preparing camera to auto-scan and crop the back side...",
+                color = Color.White.copy(alpha = 0.74f),
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
+@Composable
+private fun CnicDualReviewScreen(
+    front: CnicCaptureResult,
+    back: CnicCaptureResult,
+    onRescanFront: () -> Unit,
+    onRescanBack: () -> Unit,
+    onUseNow: () -> Unit,
+    onClose: () -> Unit
+) {
+    val frontBitmap = remember(front.jpegBytes) {
+        BitmapFactory.decodeByteArray(front.jpegBytes, 0, front.jpegBytes.size)
+    }
+    val backBitmap = remember(back.jpegBytes) {
+        BitmapFactory.decodeByteArray(back.jpegBytes, 0, back.jpegBytes.size)
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF060B14))
+            .systemBarsPadding()
+            .padding(20.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(
+                onClick = onClose,
+                modifier = Modifier
+                    .size(48.dp)
+                    .background(Color.White.copy(alpha = 0.08f), CircleShape)
+            ) {
+                Icon(Icons.Default.Close, contentDescription = "Close review", tint = Color.White)
+            }
+
+            Surface(
+                color = SuccessGreen.copy(alpha = 0.16f),
+                shape = RoundedCornerShape(50),
+                border = BorderStroke(1.dp, SuccessGreen.copy(alpha = 0.5f))
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = SuccessGreen, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Both Sides Cropped Cleanly",
+                        color = SuccessGreen,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.size(48.dp))
+        }
+
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Review Scanned CNIC",
+                color = Color.White,
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "Only the CNIC card area inside the frame was captured. Tap Use Now to continue with auto-filled details.",
+                color = Color.White.copy(alpha = 0.74f),
+                style = MaterialTheme.typography.bodySmall
+            )
+
+            CnicReviewCardTile(
+                title = "CNIC Front Side",
+                bitmap = frontBitmap,
+                onRescan = onRescanFront,
+                rescanTag = "rescan_cnic_front_button"
+            )
+
+            CnicReviewCardTile(
+                title = "CNIC Back Side",
+                bitmap = backBitmap,
+                onRescan = onRescanBack,
+                rescanTag = "rescan_cnic_back_button"
+            )
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        Button(
+            onClick = onUseNow,
+            colors = ButtonDefaults.buttonColors(containerColor = ZulvazaOrange),
+            shape = RoundedCornerShape(16.dp),
+            contentPadding = PaddingValues(vertical = 14.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .defaultMinSize(minHeight = 54.dp)
+                .testTag("cnic_use_now_button")
+        ) {
+            Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(20.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = "Use Now",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+private fun CnicReviewCardTile(
+    title: String,
+    bitmap: Bitmap?,
+    onRescan: () -> Unit,
+    rescanTag: String
+) {
+    Card(
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Badge,
+                        contentDescription = null,
+                        tint = ZulvazaOrange,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = title,
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = onRescan,
+                    shape = RoundedCornerShape(50),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.25f)),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    modifier = Modifier
+                        .defaultMinSize(minHeight = 36.dp)
+                        .testTag(rescanTag)
+                ) {
+                    Icon(Icons.Default.Refresh, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Rescan", color = Color.White, style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(85.6f / 54f)
+                    .clip(RoundedCornerShape(14.dp))
+                    .border(1.5.dp, SuccessGreen.copy(alpha = 0.7f), RoundedCornerShape(14.dp))
+                    .background(Color.Black),
+                contentAlignment = Alignment.Center
+            ) {
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = title,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
+        }
+    }
+}
 
 @Composable
 fun CnicLiveCameraOverlayScreen(
     sideLabel: String, // "Front" or "Back"
+    stepBadge: String = "CNIC $sideLabel • Auto-Scan",
     onCaptured: (CnicCaptureResult) -> Unit,
     onClose: () -> Unit
 ) {
@@ -121,6 +664,7 @@ fun CnicLiveCameraOverlayScreen(
 
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val topOffsetPx = with(LocalDensity.current) { 18.dp.toPx() }
 
     var hasCameraPermission by remember {
         mutableStateOf(
@@ -153,6 +697,7 @@ fun CnicLiveCameraOverlayScreen(
     var detectionProgress by remember { mutableFloatStateOf(0f) }
     var cardDetectedState by remember { mutableStateOf(false) }
     var liveHint by remember { mutableStateOf("Place your CNIC $sideLabel card inside the frame") }
+    var previewSize by remember { mutableStateOf(IntSize.Zero) }
 
     val textRecognizer = remember { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
 
@@ -185,7 +730,7 @@ fun CnicLiveCameraOverlayScreen(
     LaunchedEffect(capturedReadyResult) {
         val result = capturedReadyResult ?: return@LaunchedEffect
         showSuccessTick = true
-        delay(680)
+        delay(620)
         onCaptured(result)
     }
 
@@ -193,6 +738,8 @@ fun CnicLiveCameraOverlayScreen(
         val capture = imageCapture ?: return
         if (isCapturing || showSuccessTick) return
         isCapturing = true
+        val vpW = previewSize.width
+        val vpH = previewSize.height
         capture.takePicture(
             ContextCompat.getMainExecutor(context),
             object : ImageCapture.OnImageCapturedCallback() {
@@ -203,8 +750,13 @@ fun CnicLiveCameraOverlayScreen(
                         isCapturing = false
                         return
                     }
-                    // Crop strictly to the 85.6:54 CNIC frame in center of captured photo
-                    val cardBitmap = cropBitmapToCnicFrame(rotated)
+                    // Crop strictly to the exact pixels inside the green CNIC guide box
+                    val cardBitmap = cropBitmapToCnicFrame(
+                        rotated = rotated,
+                        previewWidthPx = vpW,
+                        previewHeightPx = vpH,
+                        topOffsetPx = topOffsetPx
+                    )
                     val ocrFinalText = try {
                         val task = textRecognizer.process(InputImage.fromBitmap(cardBitmap, 0))
                         Tasks.await(task, 2500, TimeUnit.MILLISECONDS).text
@@ -212,7 +764,7 @@ fun CnicLiveCameraOverlayScreen(
                         ""
                     }
                     val baos = ByteArrayOutputStream()
-                    cardBitmap.compress(Bitmap.CompressFormat.JPEG, 90, baos)
+                    cardBitmap.compress(Bitmap.CompressFormat.JPEG, 92, baos)
                     capturedReadyResult = CnicCaptureResult(
                         jpegBytes = baos.toByteArray(),
                         extractedText = ocrFinalText,
@@ -234,6 +786,7 @@ fun CnicLiveCameraOverlayScreen(
             .fillMaxSize()
             .background(Color(0xFF060B14))
             .systemBarsPadding()
+            .onSizeChanged { previewSize = it }
     ) {
         if (!hasCameraPermission) {
             Column(
@@ -295,7 +848,11 @@ fun CnicLiveCameraOverlayScreen(
                 }
             }
         } else {
-            val previewView = remember { PreviewView(context) }
+            val previewView = remember {
+                PreviewView(context).apply {
+                    scaleType = PreviewView.ScaleType.FILL_CENTER
+                }
+            }
             val analyzerExecutor = remember { Executors.newSingleThreadExecutor() }
 
             DisposableEffect(lifecycleOwner, sideLabel) {
@@ -305,17 +862,26 @@ fun CnicLiveCameraOverlayScreen(
                 var confirmedCardHits = 0
                 var lastAnalyzedMs = 0L
 
+                val ratioSelector = ResolutionSelector.Builder()
+                    .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+                    .build()
+
                 cameraProviderFuture.addListener({
                     try {
                         val cameraProvider = cameraProviderFuture.get()
-                        val preview = Preview.Builder().build().also {
-                            it.setSurfaceProvider(previewView.surfaceProvider)
-                        }
+                        val preview = Preview.Builder()
+                            .setResolutionSelector(ratioSelector)
+                            .build()
+                            .also {
+                                it.setSurfaceProvider(previewView.surfaceProvider)
+                            }
                         val capture = ImageCapture.Builder()
-                            .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                            .setResolutionSelector(ratioSelector)
+                            .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
                             .build()
 
                         val analysis = ImageAnalysis.Builder()
+                            .setResolutionSelector(ratioSelector)
                             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                             .build()
                             .apply {
@@ -337,7 +903,12 @@ fun CnicLiveCameraOverlayScreen(
                                         metrics.borderContrast >= 7.0
                                     ) {
                                         try {
-                                            val analysisBitmap = yuvImageProxyToCroppedCardBitmap(proxy)
+                                            val analysisBitmap = yuvImageProxyToCroppedCardBitmap(
+                                                proxy = proxy,
+                                                previewWidthPx = previewSize.width,
+                                                previewHeightPx = previewSize.height,
+                                                topOffsetPx = topOffsetPx
+                                            )
                                             if (analysisBitmap != null) {
                                                 val ocrTask = textRecognizer.process(
                                                     InputImage.fromBitmap(analysisBitmap, 0)
@@ -390,7 +961,7 @@ fun CnicLiveCameraOverlayScreen(
                                                 confirmedCardHits++
                                                 cardDetectedState = true
                                                 detectionProgress = (0.5f + confirmedCardHits * 0.25f).coerceIn(0f, 1f)
-                                                liveHint = "CNIC $sideLabel verified — capturing cleanly..."
+                                                liveHint = "CNIC $sideLabel verified — cropping card..."
                                                 if (confirmedCardHits >= 2) {
                                                     triggerAutoCapture()
                                                 }
@@ -436,18 +1007,18 @@ fun CnicLiveCameraOverlayScreen(
                 val frameWidth = size.width * 0.88f
                 val frameHeight = frameWidth / cardRatio
                 val left = (size.width - frameWidth) / 2f
-                val top = (size.height - frameHeight) / 2f - 18.dp.toPx()
+                val top = (size.height - frameHeight) / 2f - topOffsetPx
                 val rect = Rect(left, top, left + frameWidth, top + frameHeight)
                 val roundRect = RoundRect(rect, CornerRadius(18.dp.toPx(), 18.dp.toPx()))
                 val cutPath = Path().apply { addRoundRect(roundRect) }
 
                 clipPath(cutPath, clipOp = ClipOp.Difference) {
-                    drawRect(Color.Black.copy(alpha = 0.72f))
+                    drawRect(Color.Black.copy(alpha = 0.76f))
                 }
 
-                // Subtle outer border
+                // Border outline matching exact crop bounds
                 drawRoundRect(
-                    color = frameColor.copy(alpha = 0.45f),
+                    color = frameColor.copy(alpha = 0.55f),
                     topLeft = Offset(left, top),
                     size = Size(frameWidth, frameHeight),
                     cornerRadius = CornerRadius(18.dp.toPx(), 18.dp.toPx()),
@@ -470,7 +1041,6 @@ fun CnicLiveCameraOverlayScreen(
                 drawLine(frameColor, Offset(left + frameWidth - bracketLen, top + frameHeight), Offset(left + frameWidth - 8.dp.toPx(), top + frameHeight), bracketStroke, StrokeCap.Round)
                 drawLine(frameColor, Offset(left + frameWidth, top + frameHeight - bracketLen), Offset(left + frameWidth, top + frameHeight - 8.dp.toPx()), bracketStroke, StrokeCap.Round)
 
-                // Animated scan line inside card frame while scanning
                 if (!showSuccessTick) {
                     val beamY = top + frameHeight * scanLineFraction
                     drawLine(
@@ -531,7 +1101,7 @@ fun CnicLiveCameraOverlayScreen(
                 }
             }
 
-            // Clean Top Controls
+            // Top Controls
             Row(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
@@ -566,7 +1136,7 @@ fun CnicLiveCameraOverlayScreen(
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "CNIC $sideLabel • Auto-Scan",
+                            text = stepBadge,
                             color = Color.White,
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.SemiBold
@@ -592,10 +1162,10 @@ fun CnicLiveCameraOverlayScreen(
                 }
             }
 
-            // Bottom Smart Detection Status Card (NO Manual Shutter Button!)
+            // Bottom Smart Detection Status Card (auto-capture only)
             if (!showSuccessTick) {
                 Surface(
-                    color = Color(0xFF0F172A).copy(alpha = 0.88f),
+                    color = Color(0xFF0F172A).copy(alpha = 0.90f),
                     shape = RoundedCornerShape(22.dp),
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
@@ -647,8 +1217,8 @@ fun CnicLiveCameraOverlayScreen(
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "Camera captures automatically once your CNIC $sideLabel card is clearly detected inside the frame.",
-                            color = Color.White.copy(alpha = 0.7f),
+                            text = "Only the CNIC $sideLabel card inside the frame is captured — background is automatically removed.",
+                            color = Color.White.copy(alpha = 0.72f),
                             style = MaterialTheme.typography.labelSmall,
                             textAlign = TextAlign.Center
                         )
@@ -707,7 +1277,6 @@ private fun evaluateCnicFrame(proxy: ImageProxy, prevSignature: IntArray?): Fram
         }
     }
 
-    // Measure contrast near top/bottom/left/right boundaries of card box
     var borderDiffSum = 0L
     var borderSamples = 0
     val margin = 12
@@ -753,7 +1322,12 @@ private fun evaluateCnicFrame(proxy: ImageProxy, prevSignature: IntArray?): Fram
     )
 }
 
-private fun yuvImageProxyToCroppedCardBitmap(proxy: ImageProxy): Bitmap? {
+private fun yuvImageProxyToCroppedCardBitmap(
+    proxy: ImageProxy,
+    previewWidthPx: Int,
+    previewHeightPx: Int,
+    topOffsetPx: Float
+): Bitmap? {
     return try {
         val raw = proxy.toBitmap()
         val rotation = proxy.imageInfo.rotationDegrees
@@ -763,19 +1337,58 @@ private fun yuvImageProxyToCroppedCardBitmap(proxy: ImageProxy): Bitmap? {
         } else {
             raw
         }
-        cropBitmapToCnicFrame(rotated)
+        cropBitmapToCnicFrame(rotated, previewWidthPx, previewHeightPx, topOffsetPx)
     } catch (_: Exception) {
         null
     }
 }
 
-private fun cropBitmapToCnicFrame(rotated: Bitmap): Bitmap {
+/**
+ * Computes exact PreviewView FILL_CENTER inverse projection of the 85.6:54 CNIC frame
+ * so ONLY the card pixels inside the green border are extracted, with zero background.
+ */
+private fun cropBitmapToCnicFrame(
+    rotated: Bitmap,
+    previewWidthPx: Int,
+    previewHeightPx: Int,
+    topOffsetPx: Float
+): Bitmap {
+    val bmpW = rotated.width
+    val bmpH = rotated.height
     val cardRatio = 85.6f / 54f
-    val cropW = (rotated.width * 0.90f).roundToInt().coerceIn(32, rotated.width)
-    val cropH = ((cropW / cardRatio) * 1.06f).roundToInt().coerceIn(32, rotated.height)
-    val left = ((rotated.width - cropW) / 2f).roundToInt().coerceIn(0, (rotated.width - cropW).coerceAtLeast(0))
-    val top = ((rotated.height - cropH) / 2f).roundToInt().coerceIn(0, (rotated.height - cropH).coerceAtLeast(0))
-    return Bitmap.createBitmap(rotated, left, top, cropW, cropH)
+
+    if (previewWidthPx <= 0 || previewHeightPx <= 0) {
+        val cropW = (bmpW * 0.88f).roundToInt().coerceIn(32, bmpW)
+        val cropH = (cropW / cardRatio).roundToInt().coerceIn(32, bmpH)
+        val left = ((bmpW - cropW) / 2f).roundToInt().coerceIn(0, (bmpW - cropW).coerceAtLeast(0))
+        val top = ((bmpH - cropH) / 2f).roundToInt().coerceIn(0, (bmpH - cropH).coerceAtLeast(0))
+        return Bitmap.createBitmap(rotated, left, top, cropW, cropH)
+    }
+
+    val viewW = previewWidthPx.toFloat()
+    val viewH = previewHeightPx.toFloat()
+    val frameWidth = viewW * 0.88f
+    val frameHeight = frameWidth / cardRatio
+    val rectLeft = (viewW - frameWidth) / 2f
+    val rectTop = (viewH - frameHeight) / 2f - topOffsetPx
+    val rectRight = rectLeft + frameWidth
+    val rectBottom = rectTop + frameHeight
+
+    // FILL_CENTER scale of rotated bitmap into view bounds
+    val scale = max(viewW / bmpW.toFloat(), viewH / bmpH.toFloat())
+    val scaledW = bmpW * scale
+    val scaledH = bmpH * scale
+    val offsetX = (viewW - scaledW) / 2f
+    val offsetY = (viewH - scaledH) / 2f
+
+    val bmpLeft = ((rectLeft - offsetX) / scale).roundToInt().coerceIn(0, (bmpW - 32).coerceAtLeast(0))
+    val bmpTop = ((rectTop - offsetY) / scale).roundToInt().coerceIn(0, (bmpH - 32).coerceAtLeast(0))
+    val bmpRight = ((rectRight - offsetX) / scale).roundToInt().coerceIn(bmpLeft + 32, bmpW)
+    val bmpBottom = ((rectBottom - offsetY) / scale).roundToInt().coerceIn(bmpTop + 32, bmpH)
+
+    val cropW = (bmpRight - bmpLeft).coerceIn(1, bmpW - bmpLeft)
+    val cropH = (bmpBottom - bmpTop).coerceIn(1, bmpH - bmpTop)
+    return Bitmap.createBitmap(rotated, bmpLeft, bmpTop, cropW, cropH)
 }
 
 private fun imageProxyToRotatedBitmap(image: ImageProxy): Bitmap? {

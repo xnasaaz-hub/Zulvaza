@@ -80,4 +80,34 @@ class ExampleUnitTest {
         assertEquals("35202-1234567-1", Formatters.formatCnicDisplay("3520212345671"))
         assertTrue(Formatters.formatPkr(500.0).contains("500"))
     }
+
+    @Test
+    fun cnicDetailsExtraction_populatesNameDobIssueExpiryAndGender() {
+        val frontText = """
+            ISLAMIC REPUBLIC OF PAKISTAN
+            National Identity Card
+            Name: Ayesha Siddiqui
+            Gender: Female
+            Identity Number: 35202-7654321-2
+            Date of Birth: 14.08.1997
+            Date of Issue: 05.03.2020
+            Date of Expiry: 05.03.2030
+        """.trimIndent()
+        val backText = "Permanent Address: Gulberg III, Lahore"
+
+        val extracted = CnicMatchValidator.extractCnicDetails(frontText, backText)
+        assertEquals("Ayesha Siddiqui", extracted.fullName)
+        assertEquals("3520276543212", extracted.cnicDigits)
+        assertEquals("1997-08-14", extracted.dateOfBirth)
+        assertEquals("2020-03-05", extracted.issueDate)
+        assertEquals("2030-03-05", extracted.expiryDate)
+        assertEquals("female", extracted.gender)
+    }
+
+    @Test
+    fun whatsappPrefixStrippingAndE164_workCorrectly() {
+        assertEquals("3001234567", Formatters.stripPakistanPrefix("+923001234567"))
+        assertEquals("3001234567", Formatters.stripPakistanPrefix("03001234567"))
+        assertTrue(Formatters.isValidPakistanE164("+92" + Formatters.stripPakistanPrefix("03001234567")))
+    }
 }

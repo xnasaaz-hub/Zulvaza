@@ -102,6 +102,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.model.ProductDraft
 import com.example.data.model.ProductItem
@@ -151,6 +153,10 @@ class MainActivity : ComponentActivity() {
                     delay(3200)
                     viewModel.clearToast()
                 }
+            }
+
+            LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+                viewModel.refreshNotificationsAndStatusOnResume()
             }
 
             ZulvazaSellerTheme(themeMode = state.themeMode) {
@@ -268,11 +274,16 @@ private fun ZulvazaRootContent(
         RootDestination.VERIFICATION -> {
             VerificationScreen(
                 verification = state.verification,
+                store = state.store,
                 canNavigateBack = state.openVerificationFromAccount &&
                     state.verification.status != VerificationStatus.UNSUBMITTED,
                 isBusy = state.isBusy,
                 resolveDocUrl = viewModel::resolveVerificationDocUrl,
+                resolveFaceUrl = viewModel::resolveFacePhotoUrl,
+                resolveStoreMedia = viewModel::resolveStoreMediaUrl,
                 onUploadCnic = viewModel::uploadCnicCapture,
+                onUploadFacePhoto = viewModel::uploadFacePhoto,
+                onUploadStoreMediaBytes = viewModel::uploadStoreMediaBytes,
                 onSubmit = viewModel::submitVerification,
                 onToast = viewModel::showToast,
                 onBack = viewModel::closeVerificationEditorToMain,
@@ -328,9 +339,6 @@ private fun MainSellerShell(
             EditStoreSheetContent(
                 initialStore = state.store,
                 isBusy = state.isBusy,
-                resolveStoreMedia = viewModel::resolveStoreMediaUrl,
-                onUploadStoreMediaBytes = viewModel::uploadStoreMediaBytes,
-                onDeleteStoreMedia = viewModel::removeStoreMedia,
                 onSaveStore = { updated, onDone ->
                     viewModel.saveStore(updated) {
                         onDone()
@@ -403,6 +411,7 @@ private fun MainSellerShell(
                 initialSubScreen = settingsInitialSubScreen,
                 resolveStoreMedia = viewModel::resolveStoreMediaUrl,
                 resolveDocUrl = viewModel::resolveVerificationDocUrl,
+                resolveFaceUrl = viewModel::resolveFacePhotoUrl,
                 onOpenVerificationEditor = {
                     showSettings = false
                     viewModel.openVerificationEditor()
@@ -633,6 +642,9 @@ private fun MainSellerShell(
                             store = state.store,
                             products = state.products,
                             resolveStoreMedia = viewModel::resolveStoreMediaUrl,
+                            onUploadStoreMediaBytes = viewModel::uploadStoreMediaBytes,
+                            onSaveStoreMedia = viewModel::saveStoreMediaOnly,
+                            onDeleteStoreMedia = viewModel::removeStoreMedia,
                             onEditStore = { showEditStoreSheet = true },
                             onToast = viewModel::showToast
                         )

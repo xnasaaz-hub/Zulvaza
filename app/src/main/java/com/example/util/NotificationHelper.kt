@@ -65,8 +65,14 @@ object NotificationHelper {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        val largeIcon = runCatching {
+            android.graphics.BitmapFactory.decodeResource(context.resources, R.drawable.ic_zulvaza_app_icon)
+        }.getOrNull()
+
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_zulvaza_app_icon)
+            .setSmallIcon(R.drawable.ic_notification_zulvaza)
+            .setColor(0xFFF97316.toInt())
+            .apply { if (largeIcon != null) setLargeIcon(largeIcon) }
             .setContentTitle(title)
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))

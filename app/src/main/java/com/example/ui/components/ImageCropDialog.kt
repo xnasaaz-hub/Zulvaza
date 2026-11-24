@@ -6,8 +6,8 @@ import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.media.ExifInterface
 import android.net.Uri
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -24,12 +24,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -41,7 +43,6 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -60,18 +61,18 @@ import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.ClipOp
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -81,9 +82,23 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
+import java.util.Locale
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+
+private fun computeCropFrameSize(vp: IntSize, targetAspect: Float): Pair<Float, Float> {
+    if (vp.width <= 0 || vp.height <= 0) return 100f to (100f / targetAspect)
+    val maxW = vp.width * 0.90f
+    val maxH = vp.height * 0.78f
+    var boxW = maxW
+    var boxH = boxW / targetAspect
+    if (boxH > maxH) {
+        boxH = maxH
+        boxW = boxH * targetAspect
+    }
+    return boxW to boxH
+}
 
 @Composable
 fun ImageCropDialog(
@@ -111,7 +126,7 @@ fun ImageCropDialog(
         sourceBitmap = null
         loadError = null
         val loaded = withContext(Dispatchers.IO) {
-            decodeOrientedBitmap(context, imageUri, maxDim = 2048)
+            decodeOrientedBitmap(context, imageUri, maxDim = 2400)
         }
         if (loaded == null) {
             loadError = "Unable to load selected image."
@@ -128,8 +143,7 @@ fun ImageCropDialog(
         vp: IntSize
     ): Pair<Float, Float> {
         if (vp.width <= 0 || vp.height <= 0) return candidateX to candidateY
-        val cropW = vp.width * 0.86f
-        val cropH = cropW / targetAspect
+        val (cropW, cropH) = computeCropFrameSize(vp, targetAspect)
         val baseFitScale = max(cropW / bmp.width.toFloat(), cropH / bmp.height.toFloat())
         val displayedW = bmp.width * baseFitScale * scaleFactor
         val displayedH = bmp.height * baseFitScale * scaleFactor
@@ -143,47 +157,72 @@ fun ImageCropDialog(
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Surface(
-            color = Color(0xFF0B1120),
+            color = Color(0xFF090E1A),
             modifier = Modifier
                 .fillMaxSize()
                 .systemBarsPadding()
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
-                // Header
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                // Studio Header Bar
+                Surface(
+                    color = Color(0xFF0F172A),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    IconButton(onClick = { if (!isProcessing) onCancel() }) {
-                        Icon(Icons.Default.Close, contentDescription = "Cancel crop", tint = Color.White)
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Crop, contentDescription = null, tint = ZulvazaOrange, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = title,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                    TextButton(
-                        onClick = {
-                            zoom = 1f
-                            offsetX = 0f
-                            offsetY = 0f
-                        }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(Icons.Default.Refresh, contentDescription = null, tint = Color.White.copy(alpha = 0.8f), modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Reset", color = Color.White.copy(alpha = 0.85f))
+                        IconButton(
+                            onClick = { if (!isProcessing) onCancel() },
+                            modifier = Modifier
+                                .size(48.dp)
+                                .background(Color.White.copy(alpha = 0.08f), CircleShape)
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = "Close cropper", tint = Color.White)
+                        }
+
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    Icons.Default.Crop,
+                                    contentDescription = null,
+                                    tint = ZulvazaOrange,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = title,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Text(
+                                text = if (isCircularLogo) "1:1 Square • 800×800px" else "16:9 Cover Banner • 1600×900px",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.White.copy(alpha = 0.65f)
+                            )
+                        }
+
+                        IconButton(
+                            onClick = {
+                                zoom = 1f
+                                offsetX = 0f
+                                offsetY = 0f
+                            },
+                            modifier = Modifier
+                                .size(48.dp)
+                                .background(Color.White.copy(alpha = 0.08f), CircleShape)
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = "Reset framing", tint = Color.White)
+                        }
                     }
                 }
 
-                // Crop Viewport
+                // Direct Canvas Viewport (1:1 pixel math match with exported crop)
                 Box(
                     modifier = Modifier
                         .weight(1f)
@@ -221,33 +260,28 @@ fun ImageCropDialog(
                         }
                         else -> {
                             val bmp = sourceBitmap!!
-                            val cropW = viewportSize.width * 0.86f
-                            val cropH = cropW / targetAspect
-                            val baseFitScale = if (cropW > 0f && cropH > 0f) {
-                                max(cropW / bmp.width.toFloat(), cropH / bmp.height.toFloat())
-                            } else {
-                                1f
-                            }
-                            val effectiveScale = baseFitScale * zoom
                             val imageBitmap = remember(bmp) { bmp.asImageBitmap() }
 
-                            Image(
-                                bitmap = imageBitmap,
-                                contentDescription = "Crop preview",
-                                contentScale = ContentScale.None,
-                                modifier = Modifier
-                                    .graphicsLayer {
-                                        scaleX = effectiveScale
-                                        scaleY = effectiveScale
-                                        translationX = offsetX
-                                        translationY = offsetY
-                                    }
-                            )
-
-                            // Translucent Crop Mask + Outline
                             Canvas(modifier = Modifier.fillMaxSize()) {
-                                val boxW = size.width * 0.86f
-                                val boxH = boxW / targetAspect
+                                val vp = IntSize(size.width.roundToInt(), size.height.roundToInt())
+                                val (boxW, boxH) = computeCropFrameSize(vp, targetAspect)
+                                val baseFitScale = max(boxW / bmp.width.toFloat(), boxH / bmp.height.toFloat())
+                                val effectiveScale = baseFitScale * zoom
+
+                                val drawW = (bmp.width * effectiveScale).roundToInt().coerceAtLeast(1)
+                                val drawH = (bmp.height * effectiveScale).roundToInt().coerceAtLeast(1)
+                                val dstLeft = ((size.width - drawW) / 2f + offsetX).roundToInt()
+                                val dstTop = ((size.height - drawH) / 2f + offsetY).roundToInt()
+
+                                drawImage(
+                                    image = imageBitmap,
+                                    srcOffset = IntOffset.Zero,
+                                    srcSize = IntSize(bmp.width, bmp.height),
+                                    dstOffset = IntOffset(dstLeft, dstTop),
+                                    dstSize = IntSize(drawW, drawH),
+                                    filterQuality = FilterQuality.High
+                                )
+
                                 val left = (size.width - boxW) / 2f
                                 val top = (size.height - boxH) / 2f
                                 val rect = Rect(left, top, left + boxW, top + boxH)
@@ -266,7 +300,17 @@ fun ImageCropDialog(
                                 }
 
                                 clipPath(cutPath, clipOp = ClipOp.Difference) {
-                                    drawRect(Color.Black.copy(alpha = 0.68f))
+                                    drawRect(Color.Black.copy(alpha = 0.72f))
+                                }
+
+                                // Subtle Rule-of-Thirds Grid inside cutout
+                                clipPath(cutPath, clipOp = ClipOp.Intersect) {
+                                    val gridColor = Color.White.copy(alpha = 0.25f)
+                                    val stroke1 = 1.dp.toPx()
+                                    drawLine(gridColor, Offset(left + boxW / 3f, top), Offset(left + boxW / 3f, top + boxH), stroke1)
+                                    drawLine(gridColor, Offset(left + 2f * boxW / 3f, top), Offset(left + 2f * boxW / 3f, top + boxH), stroke1)
+                                    drawLine(gridColor, Offset(left, top + boxH / 3f), Offset(left + boxW, top + boxH / 3f), stroke1)
+                                    drawLine(gridColor, Offset(left, top + 2f * boxH / 3f), Offset(left + boxW, top + 2f * boxH / 3f), stroke1)
                                 }
 
                                 if (isCircularLogo) {
@@ -290,29 +334,45 @@ fun ImageCropDialog(
                     }
                 }
 
-                // Bottom Controls: Zoom Slider + Confirm
+                // Bottom Controls Panel
                 Surface(
-                    color = Color(0xFF111827),
-                    shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp),
+                    color = Color(0xFF0F172A),
+                    shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp)) {
+                    Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp)) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                text = "Drag to adjust • Pinch or slide to zoom",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = Color.White.copy(alpha = 0.78f)
-                            )
-                            Text(
-                                text = String.format("%.1fx", zoom),
-                                style = MaterialTheme.typography.labelMedium,
-                                color = ZulvazaOrange,
-                                fontWeight = FontWeight.Bold
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    Icons.Default.ZoomIn,
+                                    contentDescription = null,
+                                    tint = Color.White.copy(alpha = 0.72f),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Pinch or drag to position",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = Color.White.copy(alpha = 0.78f)
+                                )
+                            }
+                            Surface(
+                                color = ZulvazaOrange.copy(alpha = 0.16f),
+                                shape = RoundedCornerShape(50)
+                            ) {
+                                Text(
+                                    text = String.format(Locale.US, "%.1fx", zoom),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = ZulvazaOrange,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                )
+                            }
                         }
 
                         Slider(
@@ -329,7 +389,8 @@ fun ImageCropDialog(
                             valueRange = 1f..4f,
                             colors = SliderDefaults.colors(
                                 thumbColor = ZulvazaOrange,
-                                activeTrackColor = ZulvazaOrange
+                                activeTrackColor = ZulvazaOrange,
+                                inactiveTrackColor = Color.White.copy(alpha = 0.18f)
                             )
                         )
 
@@ -343,10 +404,11 @@ fun ImageCropDialog(
                                 onClick = onCancel,
                                 enabled = !isProcessing,
                                 shape = RoundedCornerShape(14.dp),
+                                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.28f)),
                                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
                                 modifier = Modifier
-                                    .weight(0.4f)
-                                    .defaultMinSize(minHeight = 48.dp)
+                                    .weight(0.38f)
+                                    .defaultMinSize(minHeight = 50.dp)
                             ) {
                                 Text("Cancel", color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
@@ -364,7 +426,8 @@ fun ImageCropDialog(
                                                 zoom = zoom,
                                                 offsetX = offsetX,
                                                 offsetY = offsetY,
-                                                maxOutWidth = if (isCircularLogo) 800 else 1600
+                                                outWidth = if (isCircularLogo) 800 else 1600,
+                                                outHeight = if (isCircularLogo) 800 else 900
                                             )
                                         }
                                         isProcessing = false
@@ -376,8 +439,8 @@ fun ImageCropDialog(
                                 colors = ButtonDefaults.buttonColors(containerColor = ZulvazaOrange),
                                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
                                 modifier = Modifier
-                                    .weight(0.6f)
-                                    .defaultMinSize(minHeight = 48.dp)
+                                    .weight(0.62f)
+                                    .defaultMinSize(minHeight = 50.dp)
                                     .testTag("confirm_crop_button")
                             ) {
                                 if (isProcessing) {
@@ -407,11 +470,10 @@ private fun cropBitmapToJpeg(
     zoom: Float,
     offsetX: Float,
     offsetY: Float,
-    maxOutWidth: Int
+    outWidth: Int,
+    outHeight: Int
 ): ByteArray {
-    val vpW = viewportSize.width.coerceAtLeast(100).toFloat()
-    val cropW = vpW * 0.86f
-    val cropH = cropW / targetAspect
+    val (cropW, cropH) = computeCropFrameSize(viewportSize, targetAspect)
     val baseFitScale = max(cropW / source.width.toFloat(), cropH / source.height.toFloat())
     val effectiveScale = (baseFitScale * zoom).coerceAtLeast(0.01f)
 
@@ -424,27 +486,22 @@ private fun cropBitmapToJpeg(
     val srcLeft = (centerSrcX - srcCropW / 2f).coerceIn(0f, (source.width - srcCropW).coerceAtLeast(0f))
     val srcTop = (centerSrcY - srcCropH / 2f).coerceIn(0f, (source.height - srcCropH).coerceAtLeast(0f))
 
-    val cropIntW = srcCropW.roundToInt().coerceIn(1, source.width - srcLeft.roundToInt().coerceAtLeast(0))
-    val cropIntH = srcCropH.roundToInt().coerceIn(1, source.height - srcTop.roundToInt().coerceAtLeast(0))
+    val leftInt = srcLeft.roundToInt().coerceIn(0, (source.width - 1).coerceAtLeast(0))
+    val topInt = srcTop.roundToInt().coerceIn(0, (source.height - 1).coerceAtLeast(0))
+    val cropIntW = srcCropW.roundToInt().coerceIn(1, source.width - leftInt)
+    val cropIntH = srcCropH.roundToInt().coerceIn(1, source.height - topInt)
 
-    val cropped = Bitmap.createBitmap(
-        source,
-        srcLeft.roundToInt().coerceIn(0, (source.width - 1).coerceAtLeast(0)),
-        srcTop.roundToInt().coerceIn(0, (source.height - 1).coerceAtLeast(0)),
-        cropIntW,
-        cropIntH
-    )
-
-    val outW = min(maxOutWidth, cropped.width).coerceAtLeast(1)
-    val outH = (outW / targetAspect).roundToInt().coerceAtLeast(1)
-    val finalBmp = if (cropped.width != outW || cropped.height != outH) {
-        Bitmap.createScaledBitmap(cropped, outW, outH, true)
+    val cropped = Bitmap.createBitmap(source, leftInt, topInt, cropIntW, cropIntH)
+    val targetW = min(outWidth, max(outWidth, cropped.width)).coerceAtMost(outWidth)
+    val targetH = outHeight
+    val finalBmp = if (cropped.width != targetW || cropped.height != targetH) {
+        Bitmap.createScaledBitmap(cropped, targetW, targetH, true)
     } else {
         cropped
     }
 
     val baos = ByteArrayOutputStream()
-    finalBmp.compress(Bitmap.CompressFormat.JPEG, 90, baos)
+    finalBmp.compress(Bitmap.CompressFormat.JPEG, 92, baos)
     return baos.toByteArray()
 }
 

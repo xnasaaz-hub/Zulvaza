@@ -137,6 +137,7 @@ fun AccountScreen(
     initialSubScreen: AccountSubScreen = AccountSubScreen.MENU,
     resolveStoreMedia: (String?) -> String?,
     resolveDocUrl: (String) -> String?,
+    resolveFaceUrl: (String) -> String?,
     onOpenVerificationEditor: () -> Unit,
     onUpdatePassword: (String, String, () -> Unit) -> Unit,
     onStartTotpEnroll: () -> Unit,
@@ -202,6 +203,7 @@ fun AccountScreen(
         AccountSubScreen.VERIFICATION -> VerificationDetailsPage(
             verification = verification,
             resolveDocUrl = resolveDocUrl,
+            resolveFaceUrl = resolveFaceUrl,
             onOpenEditor = onOpenVerificationEditor,
             onBack = { subScreen = AccountSubScreen.MENU }
         )
@@ -1324,6 +1326,7 @@ private fun DeviceLoginsPage(
 private fun VerificationDetailsPage(
     verification: SellerVerification,
     resolveDocUrl: (String) -> String?,
+    resolveFaceUrl: (String) -> String?,
     onOpenEditor: () -> Unit,
     onBack: () -> Unit
 ) {
@@ -1412,6 +1415,7 @@ private fun VerificationDetailsPage(
                 Text("Identity Information", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 VerificationDetailRow("Full Name", d.fullName.ifBlank { "—" })
                 VerificationDetailRow("CNIC Number", Formatters.formatCnicDisplay(d.cnic).ifBlank { "—" })
+                VerificationDetailRow("Date of Birth", d.dateOfBirth.ifBlank { "—" })
                 VerificationDetailRow("Gender", d.gender.replaceFirstChar { it.uppercase() }.ifBlank { "—" })
                 VerificationDetailRow("Issue Date", d.issueDate.ifBlank { "—" })
                 VerificationDetailRow("Expiry Date", d.expiryDate.ifBlank { "—" })
@@ -1440,6 +1444,40 @@ private fun VerificationDetailsPage(
                     VerificationDetailRow("Address Line 2", d.address2)
                 }
                 VerificationDetailRow("Postal Code", d.zipCode.ifBlank { "—" })
+            }
+        }
+
+        // Verified Face Photo Preview
+        if (d.facePhoto.isNotBlank()) {
+            Card(
+                shape = RoundedCornerShape(22.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    SignedRemoteImage(
+                        url = resolveFaceUrl(d.facePhoto),
+                        contentDescription = "Verified face photo",
+                        modifier = Modifier
+                            .size(72.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                    )
+                    Spacer(modifier = Modifier.width(14.dp))
+                    Column {
+                        Text("Live Face Liveness Photo", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "Verified 5-angle selfie submitted for KYC review.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
             }
         }
 

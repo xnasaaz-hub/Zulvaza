@@ -625,10 +625,14 @@ class SupabaseClient {
             fullName = detailsObj.optString("full_name"),
             cnic = detailsObj.optString("cnic"),
             gender = detailsObj.optString("gender", "male").ifBlank { "male" },
+            dateOfBirth = listOf("dob", "date_of_birth")
+                .firstNotNullOfOrNull { k -> detailsObj.optString(k).takeIf { it.isNotBlank() && it != "null" } }
+                .orEmpty(),
             issueDate = detailsObj.optString("issue_date"),
             expiryDate = detailsObj.optString("expiry_date"),
             cnicFront = detailsObj.optString("cnic_front"),
             cnicBack = detailsObj.optString("cnic_back"),
+            facePhoto = detailsObj.optString("face_photo").takeIf { it != "null" }.orEmpty(),
             phone = detailsObj.optString("phone"),
             whatsapp = detailsObj.optString("whatsapp"),
             city = detailsObj.optString("city"),
@@ -655,10 +659,16 @@ class SupabaseClient {
             put("full_name", details.fullName.trim())
             put("cnic", details.cnic.filter { it.isDigit() })
             put("gender", details.gender)
+            if (details.dateOfBirth.isNotBlank()) {
+                put("dob", details.dateOfBirth.trim())
+            }
             put("issue_date", details.issueDate.trim())
             put("expiry_date", details.expiryDate.trim())
             put("cnic_front", details.cnicFront)
             put("cnic_back", details.cnicBack)
+            if (details.facePhoto.isNotBlank()) {
+                put("face_photo", details.facePhoto)
+            }
             put("phone", details.phone.trim())
             put("whatsapp", details.whatsapp.trim())
             put("city", details.city.trim())
@@ -768,6 +778,17 @@ class SupabaseClient {
             method = "POST",
             url = "${SupabaseConfig.SUPABASE_URL}/rest/v1/rpc/save_seller_store",
             bodyJson = payload.toString(),
+            accessToken = session.accessToken
+        )
+    }
+
+    suspend fun clearStoreMediaColumn(session: UserSession, isLogo: Boolean) {
+        val column = if (isLogo) "logo_path" else "banner_path"
+        val body = JSONObject().apply { put(column, JSONObject.NULL) }
+        executeJson(
+            method = "PATCH",
+            url = "${SupabaseConfig.SUPABASE_URL}/rest/v1/seller_stores?seller_id=eq.${session.userId}",
+            bodyJson = body.toString(),
             accessToken = session.accessToken
         )
     }
@@ -1066,6 +1087,56 @@ class SupabaseClient {
             mimeType = mimeType,
             upsert = true
         )
+    }
+
+    suspend fun uploadFacePhoto(
+        session: UserSession,
+        objectPath: String,
+        bytes: ByteArray
+    ): String {
+        require(bytes.isNotEmpty() && bytes.size <= 5 * 1024 * 1024) {
+            "Face photo must be between 1 byte and 5 MB"
+        }
+        return uploadBytesWithProgress(
+            session = session,
+            bucket = SupabaseConfig.BUCKET_SELLER_FACES,
+            objectPath = objectPath,
+            bytes = bytes,
+            mimeType = "image/jpeg",
+            upsert = false
+        )
+    }
+
+    suspend fun deleteStorageObject(
+        session: UserSession,
+        bucket: String,
+        objectPath: String
+    ) = withContext(Dispatchers.IO) {
+        val cleanPath = objectPath.trimStart('/')
+        if (cleanPath.isBlank()) return@withContext
+        val prefixes = JSONObject().apply {
+            put("prefixes", JSONArray().apply { put(cleanPath) })
+        }
+        val batchRequest = baseHeaders(session.accessToken)
+            .url("${SupabaseConfig.SUPABASE_URL}/storage/v1/object/$bucket")
+            .header("Content-Type", "application/json")
+            .delete(prefixes.toString().toRequestBody(jsonMediaType))
+            .build()
+        val (code, text) = executeRaw(batchRequest)
+        if (code !in 200..299 && code != 404) {
+            Log.w("SupabaseStorage", "Batch delete failed [$bucket/$cleanPath] ($code): $text")
+            val encodedPath = cleanPath.split("/").joinToString("/") {
+                URLEncoder.encode(it, "UTF-8").replace("+", "%20")
+            }
+            val singleRequest = baseHeaders(session.accessToken)
+                .url("${SupabaseConfig.SUPABASE_URL}/storage/v1/object/$bucket/$encodedPath")
+                .delete()
+                .build()
+            val (sCode, sText) = executeRaw(singleRequest)
+            if (sCode !in 200..299 && sCode != 404) {
+                Log.w("SupabaseStorage", "Single delete failed [$bucket/$cleanPath] ($sCode): $sText")
+            }
+        }
     }
 
     suspend fun createSignedUrl(

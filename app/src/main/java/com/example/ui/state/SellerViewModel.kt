@@ -533,6 +533,9 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
             if (verification.details.cnicBack.isNotBlank()) {
                 ensureSignedUrl(session, SupabaseConfig.BUCKET_SELLER_KYC, verification.details.cnicBack)
             }
+            if (verification.details.facePhoto.isNotBlank()) {
+                ensureSignedUrl(session, SupabaseConfig.BUCKET_SELLER_FACES, verification.details.facePhoto)
+            }
         }
     }
 
@@ -572,6 +575,9 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
 
     fun resolveVerificationDocUrl(path: String): String? =
         resolveMediaUrl(SupabaseConfig.BUCKET_SELLER_KYC, path)
+
+    fun resolveFacePhotoUrl(path: String): String? =
+        resolveMediaUrl(SupabaseConfig.BUCKET_SELLER_FACES, path)
 
     private suspend fun ensureSignedUrl(session: UserSession, bucket: String, path: String): String? {
         val key = "$bucket:$path"
@@ -934,15 +940,56 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun refreshNotificationsAndStatusOnResume() {
+        val currentSession = _uiState.value.session ?: return
+        if (!_uiState.value.isOnline) return
+        viewModelScope.launch {
+            runCatching {
+                withValidSession { session ->
+                    val verification = supabase.fetchVerification(session)
+                    val events = runCatching { supabase.fetchVerificationEvents(session) }.getOrDefault(_uiState.value.verificationEvents)
+                    val deviceId = sessionStore.getOrCreateDeviceId()
+                    val deviceName = listOf(Build.MANUFACTURER, Build.MODEL)
+                        .filter { it.isNotBlank() }
+                        .joinToString(" ")
+                        .ifBlank { "Android Device" }
+                    val (devices, wasRevoked) = runCatching {
+                        supabase.syncActiveDevices(session, deviceId, deviceName, "Android ${Build.VERSION.RELEASE}")
+                    }.getOrDefault(_uiState.value.activeDevices to false)
+                    if (wasRevoked) {
+                        signOut()
+                        return@withValidSession
+                    }
+                    _uiState.update {
+                        it.copy(
+                            verification = verification,
+                            verificationEvents = events,
+                            activeDevices = devices
+                        )
+                    }
+                    evaluateVerificationStatusNotification(verification)
+                    evaluateDeviceLoginNotifications(devices, deviceId)
+                    checkForAppUpdateSilent()
+                }
+            }
+        }
+    }
+
     private suspend fun evaluateVerificationStatusNotification(verification: SellerVerification) {
         val prevRaw = sessionStore.getLastKnownVerificationStatus()
         val currRaw = verification.status.raw
         sessionStore.setLastKnownVerificationStatus(currRaw)
         if (prevRaw == null || prevRaw == currRaw) return
         when (verification.status) {
+            VerificationStatus.PENDING -> pushNotification(
+                title = "Verification Under Review",
+                message = "Your CNIC, face verification & store details are under review. We'll notify you once approved.",
+                type = NotificationType.VERIFICATION,
+                targetRoute = "verification"
+            )
             VerificationStatus.APPROVED -> pushNotification(
                 title = "Seller Verification Approved",
-                message = "Congratulations! Your CNIC & store verification has been approved.",
+                message = "Congratulations! Your CNIC, face & store verification has been approved.",
                 type = NotificationType.VERIFICATION,
                 targetRoute = "verification"
             )
@@ -1241,27 +1288,58 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun submitVerification(details: SellerIdentityDetails) {
+    suspend fun uploadFacePhoto(bytes: ByteArray): String {
+        require(bytes.isNotEmpty() && bytes.size <= 5 * 1024 * 1024) {
+            "Captured face photo must be between 1 byte and 5 MB"
+        }
+        val previewFile = withContext(Dispatchers.IO) {
+            val file = File(getApplication<Application>().cacheDir, "face_preview_${System.currentTimeMillis()}.jpg")
+            file.writeBytes(bytes)
+            file
+        }
+        return withValidSession { session ->
+            val authUserId = supabase.getAuthenticatedUserId(session)
+            val authedSession = if (session.userId == authUserId) session else session.copy(userId = authUserId)
+            val filePath = buildStoragePath(authUserId, "jpg")
+            val savedPath = supabase.uploadFacePhoto(authedSession, filePath, bytes)
+            cacheLocalPreviewUrl(SupabaseConfig.BUCKET_SELLER_FACES, savedPath, Uri.fromFile(previewFile).toString())
+            runCatching { ensureSignedUrl(authedSession, SupabaseConfig.BUCKET_SELLER_FACES, savedPath) }
+            savedPath
+        }
+    }
+
+    fun submitVerification(details: SellerIdentityDetails, storeSetup: SellerStore? = null) {
         viewModelScope.launch {
             _uiState.update { it.copy(isBusy = true) }
             try {
                 withValidSession { session ->
                     supabase.submitSellerIdentity(session, details)
+                    if (storeSetup != null && storeSetup.shopName.isNotBlank()) {
+                        val slugClean = storeSetup.slug.ifBlank { Formatters.slugify(storeSetup.shopName) }
+                        val storeToSave = storeSetup.copy(
+                            sellerId = session.userId,
+                            slug = slugClean
+                        )
+                        runCatching { supabase.saveSellerStore(session, storeToSave) }
+                    }
                     val refreshed = supabase.fetchVerification(session)
+                    val refreshedStore = runCatching { supabase.fetchStore(session) }.getOrNull() ?: storeSetup ?: _uiState.value.store
                     val events = runCatching { supabase.fetchVerificationEvents(session) }.getOrDefault(emptyList())
-                    sessionStore.saveWorkspaceCache(refreshed, _uiState.value.store, _uiState.value.products)
+                    sessionStore.saveWorkspaceCache(refreshed, refreshedStore, _uiState.value.products)
                     _uiState.update {
                         it.copy(
                             verification = refreshed,
                             verificationEvents = events,
+                            store = refreshedStore,
                             rootDestination = RootDestination.MAIN,
                             activeTab = MainTab.HOME,
                             openVerificationFromAccount = false,
                             isBusy = false
                         )
                     }
+                    evaluateVerificationStatusNotification(refreshed)
                 }
-                showToast("Identity submitted for review")
+                showToast("Verification submitted! Status is now Under Review.")
             } catch (e: Exception) {
                 _uiState.update { it.copy(isBusy = false) }
                 showToast(e.message ?: "Verification submission failed", isError = true)
@@ -1326,21 +1404,78 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun removeStoreMedia(isLogo: Boolean) {
-        val currentStore = _uiState.value.store ?: return
-        val updated = if (isLogo) currentStore.copy(logoPath = null) else currentStore.copy(bannerPath = null)
+    fun saveStoreMediaOnly(isLogo: Boolean, uploadedPath: String) {
+        val state = _uiState.value
+        val sessionUserId = state.session?.userId.orEmpty()
+        val currentStore = state.store
+        val fallbackName = state.verification.details.fullName.takeIf { it.isNotBlank() }
+            ?: state.session?.email?.substringBefore("@")
+            ?: "My Store"
+        val baseStore = currentStore ?: SellerStore(
+            sellerId = sessionUserId,
+            shopName = fallbackName,
+            slug = Formatters.slugify(fallbackName)
+        )
+        val updated = if (isLogo) {
+            baseStore.copy(logoPath = uploadedPath)
+        } else {
+            baseStore.copy(bannerPath = uploadedPath)
+        }
+        val oldPath = if (isLogo) currentStore?.logoPath else currentStore?.bannerPath
         viewModelScope.launch {
-            runCatching {
+            _uiState.update { it.copy(store = updated, isBusy = true) }
+            try {
                 withValidSession { session ->
+                    if (!oldPath.isNullOrBlank() && oldPath != uploadedPath) {
+                        runCatching { supabase.deleteStorageObject(session, SupabaseConfig.BUCKET_STORE_MEDIA, oldPath) }
+                    }
                     supabase.saveSellerStore(session, updated)
                     val refreshed = supabase.fetchStore(session) ?: updated
                     sessionStore.saveWorkspaceCache(_uiState.value.verification, refreshed, _uiState.value.products)
-                    _uiState.update { it.copy(store = refreshed) }
+                    _uiState.update { it.copy(store = refreshed, isBusy = false) }
+                    refreshed.logoPath?.let { ensureSignedUrl(session, SupabaseConfig.BUCKET_STORE_MEDIA, it) }
+                    refreshed.bannerPath?.let { ensureSignedUrl(session, SupabaseConfig.BUCKET_STORE_MEDIA, it) }
                 }
-            }.onSuccess {
-                showToast(if (isLogo) "Store logo deleted" else "Store banner deleted")
-            }.onFailure { e ->
-                showToast(e.message ?: "Failed to remove media", isError = true)
+                showToast(if (isLogo) "Store logo updated" else "Cover banner updated")
+            } catch (e: Exception) {
+                _uiState.update { it.copy(isBusy = false) }
+                showToast(e.message ?: "Failed to save store media", isError = true)
+            }
+        }
+    }
+
+    fun removeStoreMedia(isLogo: Boolean) {
+        val currentStore = _uiState.value.store ?: return
+        val oldPath = if (isLogo) currentStore.logoPath else currentStore.bannerPath
+        val updated = if (isLogo) currentStore.copy(logoPath = null) else currentStore.copy(bannerPath = null)
+        val cacheKey = oldPath?.let { "${SupabaseConfig.BUCKET_STORE_MEDIA}:$it" }
+        _uiState.update { st ->
+            st.copy(
+                store = updated,
+                isBusy = true,
+                localPreviewUrls = if (cacheKey != null) st.localPreviewUrls - cacheKey else st.localPreviewUrls,
+                signedUrls = if (cacheKey != null) st.signedUrls - cacheKey else st.signedUrls
+            )
+        }
+        viewModelScope.launch {
+            try {
+                withValidSession { session ->
+                    if (!oldPath.isNullOrBlank()) {
+                        runCatching { supabase.deleteStorageObject(session, SupabaseConfig.BUCKET_STORE_MEDIA, oldPath) }
+                    }
+                    runCatching { supabase.saveSellerStore(session, updated) }
+                    runCatching { supabase.clearStoreMediaColumn(session, isLogo) }
+                    val remote = runCatching { supabase.fetchStore(session) }.getOrNull()
+                    val finalStore = (remote ?: updated).let { st ->
+                        if (isLogo) st.copy(logoPath = null) else st.copy(bannerPath = null)
+                    }
+                    sessionStore.saveWorkspaceCache(_uiState.value.verification, finalStore, _uiState.value.products)
+                    _uiState.update { it.copy(store = finalStore, isBusy = false) }
+                }
+                showToast(if (isLogo) "Store logo deleted" else "Cover banner deleted")
+            } catch (e: Exception) {
+                _uiState.update { it.copy(store = currentStore, isBusy = false) }
+                showToast(e.message ?: "Failed to delete media", isError = true)
             }
         }
     }
