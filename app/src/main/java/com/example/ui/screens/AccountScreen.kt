@@ -31,6 +31,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteOutline
@@ -52,6 +53,7 @@ import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -83,6 +85,7 @@ import androidx.compose.ui.focus.onFocusEvent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -115,6 +118,7 @@ import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.ui.theme.SuccessGreen
 import com.example.ui.theme.SuccessGreenSoft
 import com.example.ui.theme.WarningAmber
+import com.example.ui.theme.WarningAmberSoft
 import com.example.ui.theme.ZulvazaNavy
 import com.example.ui.theme.ZulvazaOrange
 import com.example.util.Formatters
@@ -1761,6 +1765,7 @@ private fun UpdatesSubScreen(
     onBack: () -> Unit
 ) {
     BackHandler { onBack() }
+    val uriHandler = LocalUriHandler.current
 
     Column(
         modifier = Modifier
@@ -1802,6 +1807,12 @@ private fun UpdatesSubScreen(
                             text = "App Version: v${BuildConfig.VERSION_NAME} (Build ${BuildConfig.VERSION_CODE})",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        StatusPill(
+                            text = if (BuildConfig.DEBUG) "Debug Signed Build" else "Release Signed Build",
+                            bg = if (BuildConfig.DEBUG) WarningAmberSoft else SuccessGreenSoft,
+                            fg = if (BuildConfig.DEBUG) WarningAmber else SuccessGreen
                         )
                     }
                 }
@@ -1858,7 +1869,6 @@ private fun UpdatesSubScreen(
             }
         }
 
-        // Dynamic Update Status Card (Clean — No GitHub references)
         when (updateStatus) {
             AppUpdateStatus.Idle -> Unit
 
@@ -1875,7 +1885,7 @@ private fun UpdatesSubScreen(
                     ) {
                         CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.5.dp, color = ZulvazaOrange)
                         Spacer(modifier = Modifier.width(12.dp))
-                        Text("Checking for latest version...", style = MaterialTheme.typography.bodyMedium)
+                        Text("Checking for latest release...", style = MaterialTheme.typography.bodyMedium)
                     }
                 }
             }
@@ -1944,6 +1954,30 @@ private fun UpdatesSubScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+
+                        if (!rel.isCompatibleSignature) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Surface(
+                                color = WarningAmberSoft,
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(1.dp, WarningAmber.copy(alpha = 0.45f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalAlignment = Alignment.Top
+                                ) {
+                                    Icon(Icons.Default.WarningAmber, contentDescription = null, tint = WarningAmber, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "Signing mismatch: This update APK has a different signing key than your installed build. If Android rejects updating over it, open Releases and reinstall cleanly.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = WarningAmber
+                                    )
+                                }
+                            }
+                        }
+
                         Spacer(modifier = Modifier.height(14.dp))
                         Button(
                             onClick = onDownloadUpdate,
@@ -1960,6 +1994,20 @@ private fun UpdatesSubScreen(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
+                        }
+                        if (rel.htmlUrl.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            OutlinedButton(
+                                onClick = { runCatching { uriHandler.openUri(rel.htmlUrl) } },
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .defaultMinSize(minHeight = 46.dp)
+                            ) {
+                                Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Open Release Page", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
                         }
                     }
                 }
@@ -2037,6 +2085,15 @@ private fun UpdatesSubScreen(
                             Spacer(modifier = Modifier.width(8.dp))
                             Text("Install Update", maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
+                        if (updateStatus.release.htmlUrl.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            TextButton(
+                                onClick = { runCatching { uriHandler.openUri(updateStatus.release.htmlUrl) } },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Having trouble? Download from Release Page", color = SuccessGreen)
+                            }
+                        }
                     }
                 }
             }
@@ -2048,17 +2105,28 @@ private fun UpdatesSubScreen(
                     border = BorderStroke(1.dp, ErrorRed.copy(alpha = 0.35f)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Row(
-                        modifier = Modifier.padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = ErrorRed)
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text(
-                            updateStatus.message,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = ErrorRed
-                        )
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = ErrorRed)
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(
+                                updateStatus.message,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = ErrorRed
+                            )
+                        }
+                        if (!updateStatus.htmlUrl.isNullOrBlank()) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            OutlinedButton(
+                                onClick = { runCatching { uriHandler.openUri(updateStatus.htmlUrl) } },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Open Release Page")
+                            }
+                        }
                     }
                 }
             }

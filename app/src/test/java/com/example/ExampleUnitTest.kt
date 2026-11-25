@@ -140,4 +140,58 @@ class ExampleUnitTest {
         assertEquals(com.example.data.model.PasswordStrength.MEDIUM, medium)
         assertEquals(com.example.data.model.PasswordStrength.STRONG, strong)
     }
+
+    @Test
+    fun githubUpdateManager_selectsMatchingSignatureApkAndComparesVersions() {
+        val assets = listOf(
+            com.example.data.remote.ReleaseApkAssetCandidate(
+                name = "zulvaza-seller-v1.3.0-debug.apk",
+                downloadUrl = "https://example.com/debug.apk",
+                sizeBytes = 12_000_000L
+            ),
+            com.example.data.remote.ReleaseApkAssetCandidate(
+                name = "zulvaza-seller-v1.3.0-release.apk",
+                downloadUrl = "https://example.com/release.apk",
+                sizeBytes = 10_000_000L
+            )
+        )
+
+        val debugPick = com.example.data.remote.GitHubUpdateManager.selectBestApkAsset(assets, isCurrentDebugBuild = true)
+        assertEquals("zulvaza-seller-v1.3.0-debug.apk", debugPick?.asset?.name)
+        assertTrue(debugPick?.isCompatibleSignature == true)
+
+        val releasePick = com.example.data.remote.GitHubUpdateManager.selectBestApkAsset(assets, isCurrentDebugBuild = false)
+        assertEquals("zulvaza-seller-v1.3.0-release.apk", releasePick?.asset?.name)
+        assertTrue(releasePick?.isCompatibleSignature == true)
+
+        val releaseOnlyFallbackForDebug = com.example.data.remote.GitHubUpdateManager.selectBestApkAsset(
+            listOf(assets[1]),
+            isCurrentDebugBuild = true
+        )
+        assertFalse(releaseOnlyFallbackForDebug?.isCompatibleSignature ?: true)
+
+        assertTrue(com.example.data.remote.GitHubUpdateManager.isReleaseNewer("1.3.0", 4, "1.2.0", 3))
+        assertTrue(com.example.data.remote.GitHubUpdateManager.isReleaseNewer("1.2.0", 4, "1.2.0", 3))
+        assertFalse(com.example.data.remote.GitHubUpdateManager.isReleaseNewer("1.2.0", 3, "1.2.0", 3))
+    }
+
+    @Test
+    fun cnicMatchSummary_capturesFaceAndMatchOutcome() {
+        val extracted = CnicMatchValidator.extractCnicDetails(
+            frontText = "PAKISTAN Name: Ali Raza 35202-1234567-1",
+            backText = "Lahore"
+        )
+        val validation = CnicMatchValidator.validateAgainstEnteredDetails(
+            fullName = "Ali Raza",
+            cnicDigits = "3520212345671",
+            issueDateIso = "2020-01-01",
+            expiryDateIso = "2030-01-01",
+            frontText = "PAKISTAN Name: Ali Raza 35202-1234567-1",
+            backText = "Lahore"
+        )
+        val summary = CnicMatchValidator.buildMatchSummary(extracted, validation, faceDetectedOnFront = true)
+        assertTrue(summary.contains("front_face_ok"))
+        assertTrue(summary.contains("ocr_cnic_found"))
+        assertTrue(summary.contains("match_passed"))
+    }
 }

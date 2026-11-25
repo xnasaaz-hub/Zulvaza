@@ -18,12 +18,29 @@ permissions:
 
 jobs:
   build-apk:
-    name: Build Android APK
+    name: Build & Release Android APK
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Extract app version from Gradle
+        id: app_ver
+        run: |
+          VERSION_NAME=$(grep -E '^\s*versionName\s*=' app/build.gradle.kts | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
+          VERSION_CODE=$(grep -E '^\s*versionCode\s*=' app/build.gradle.kts | head -n1 | sed -E 's/[^0-9]//g')
+          if [ -z "$VERSION_NAME" ]; then VERSION_NAME="1.0.0"; fi
+          if [ -z "$VERSION_CODE" ]; then VERSION_CODE="1"; fi
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            RELEASE_TAG="${GITHUB_REF_NAME}"
+          else
+            RELEASE_TAG="v${VERSION_NAME}"
+          fi
+          echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "Detected version v${VERSION_NAME} (Build ${VERSION_CODE}), tag=${RELEASE_TAG}"
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -72,14 +89,20 @@ jobs:
 
       - name: Build Debug APK
         run: |
-          gradle --version
+          mkdir -p release-assets
           gradle :app:assembleDebug --no-daemon --stacktrace --console=plain
+          DEBUG_APK=$(find app/build/outputs/apk/debug -maxdepth 2 -name "*.apk" | head -n 1)
+          if [ -z "$DEBUG_APK" ]; then
+            echo "Debug APK not found!"
+            exit 1
+          fi
+          cp "$DEBUG_APK" "release-assets/zulvaza-seller-v${{ steps.app_ver.outputs.version_name }}-debug.apk"
 
       - name: Upload Debug APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: zulvaza-seller-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: release-assets/*-debug.apk
           if-no-files-found: error
 
       - name: Check release keystore secrets
@@ -95,7 +118,7 @@ jobs:
             echo "has_release=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build Signed Release APK & AAB
+      - name: Build & Verify Signed Release APK & AAB
         if: steps.check_release.outputs.has_release == 'true'
         env:
           RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
@@ -103,7 +126,22 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           echo "$RELEASE_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > my-upload-key.jks
+          keytool -list -keystore my-upload-key.jks -storepass "$STORE_PASSWORD" -alias upload >/dev/null
           gradle :app:assembleRelease :app:bundleRelease --no-daemon --stacktrace --console=plain
+          RELEASE_APK=$(find app/build/outputs/apk/release -maxdepth 2 -name "*.apk" | head -n 1)
+          RELEASE_AAB=$(find app/build/outputs/bundle/release -maxdepth 2 -name "*.aab" | head -n 1)
+          SDK_DIR="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          APKSIGNER_BIN="$SDK_DIR/build-tools/36.0.0/apksigner"
+          if [ -n "$RELEASE_APK" ]; then
+            if [ -x "$APKSIGNER_BIN" ]; then
+              "$APKSIGNER_BIN" verify --print-certs "$RELEASE_APK"
+            fi
+            cp "$RELEASE_APK" "release-assets/zulvaza-seller-v${{ steps.app_ver.outputs.version_name }}-release.apk"
+          fi
+          if [ -n "$RELEASE_AAB" ]; then
+            cp "$RELEASE_AAB" "release-assets/zulvaza-seller-v${{ steps.app_ver.outputs.version_name }}-release.aab"
+          fi
+          rm -f my-upload-key.jks
 
       - name: Upload Release APK & AAB Artifacts
         if: steps.check_release.outputs.has_release == 'true'
@@ -111,18 +149,32 @@ jobs:
         with:
           name: zulvaza-seller-release-builds
           path: |
-            app/build/outputs/apk/release/*.apk
-            app/build/outputs/bundle/release/*.aab
+            release-assets/*-release.apk
+            release-assets/*-release.aab
           if-no-files-found: warn
 
-      - name: Attach APKs to GitHub Release (on v* tags)
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Publish GitHub Release (for In-App Updates)
+        if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            app/build/outputs/apk/debug/*.apk
-            app/build/outputs/apk/release/*.apk
-            app/build/outputs/bundle/release/*.aab
+          tag_name: ${{ steps.app_ver.outputs.release_tag }}
+          name: ZULVAZA Seller Center v${{ steps.app_ver.outputs.version_name }} (Build ${{ steps.app_ver.outputs.version_code }})
+          make_latest: true
+          generate_release_notes: true
+          files: release-assets/*
           fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Write Build & Signing Summary
+        run: |
+          {
+            echo "## ZULVAZA Seller Center v${{ steps.app_ver.outputs.version_name }} (Build ${{ steps.app_ver.outputs.version_code }})"
+            echo "- **Debug APK**: Signed with \`debug.keystore\`"
+            if [ "${{ steps.check_release.outputs.has_release }}" = "true" ]; then
+              echo "- **Release APK & AAB**: Signed with your \`upload\` release keystore"
+            else
+              echo "- **Release APK & AAB**: Skipped (add \`RELEASE_KEYSTORE_BASE64\`, \`STORE_PASSWORD\`, and \`KEY_PASSWORD\` in Repository Secrets to sign release builds)"
+            fi
+            echo "- **Release Tag**: \`${{ steps.app_ver.outputs.release_tag }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -290,6 +290,19 @@ object CnicMatchValidator {
         )
     }
 
+    fun buildMatchSummary(
+        extracted: ExtractedCnicDetails,
+        validation: CnicMatchValidationResult,
+        faceDetectedOnFront: Boolean
+    ): String {
+        val parts = mutableListOf<String>()
+        parts += if (faceDetectedOnFront) "front_face_ok" else "front_face_unconfirmed"
+        if (extracted.cnicDigits.length == 13) parts += "ocr_cnic_found"
+        if (extracted.fullName.isNotBlank()) parts += "ocr_name_found"
+        parts += if (validation.isMatch) "match_passed" else "match_failed(${validation.mismatches.size})"
+        return parts.joinToString("|")
+    }
+
     private fun fuzzyWordMatches(target: String, candidate: String): Boolean {
         if (target == candidate) return true
         val normTarget = normalizeOcrLetters(target)

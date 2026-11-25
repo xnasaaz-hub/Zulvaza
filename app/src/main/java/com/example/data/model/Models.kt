@@ -75,7 +75,12 @@ data class SellerIdentityDetails(
     val address2: String = "",
     val zipCode: String = "",
     val latitude: Double? = null,
-    val longitude: Double? = null
+    val longitude: Double? = null,
+    val ocrFrontText: String = "",
+    val ocrBackText: String = "",
+    val ocrMatchPassed: Boolean = false,
+    val ocrMatchSummary: String = "",
+    val cnicFaceDetected: Boolean = false
 )
 
 data class SellerVerification(
@@ -214,7 +219,9 @@ data class CnicCaptureResult(
     val jpegBytes: ByteArray,
     val extractedText: String = "",
     val detectedCnicDigits: String? = null,
-    val detectedDates: List<String> = emptyList()
+    val detectedDates: List<String> = emptyList(),
+    val hasDetectedFace: Boolean = false,
+    val facePosition: String? = null
 )
 
 data class CnicDualScanResult(

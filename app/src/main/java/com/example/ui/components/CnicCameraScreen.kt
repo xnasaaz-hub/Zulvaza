@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
+import android.graphics.RectF
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -63,6 +64,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DocumentScanner
+import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.FlipCameraAndroid
@@ -122,11 +124,10 @@ import com.example.data.model.CnicCaptureResult
 import com.example.data.model.CnicDualScanResult
 import com.example.ui.theme.SuccessGreen
 import com.example.ui.theme.ZulvazaOrange
-import com.example.util.CnicMatchValidator
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.text.TextRecognition
-import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import com.google.mlkit.vision.face.FaceDetection
+import com.google.mlkit.vision.face.FaceDetectorOptions
 import kotlinx.coroutines.delay
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
@@ -534,7 +535,7 @@ private fun CnicDualReviewScreen(
                 fontWeight = FontWeight.Bold
             )
             Text(
-                text = "Only the CNIC card area inside the frame was captured. Tap Use Now to continue with auto-filled details.",
+                text = "Only the CNIC card area inside the frame was captured. Tap Use Now to upload and run background OCR matching.",
                 color = Color.White.copy(alpha = 0.74f),
                 style = MaterialTheme.typography.bodySmall
             )
@@ -687,6 +688,7 @@ fun CnicLiveCameraOverlayScreen(
         }
     }
 
+    val isFrontSide = sideLabel.equals("Front", ignoreCase = true)
     var torchEnabled by remember { mutableStateOf(false) }
     var cameraError by remember { mutableStateOf<String?>(null) }
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
@@ -696,16 +698,30 @@ fun CnicLiveCameraOverlayScreen(
     var capturedReadyResult by remember { mutableStateOf<CnicCaptureResult?>(null) }
     var detectionProgress by remember { mutableFloatStateOf(0f) }
     var cardDetectedState by remember { mutableStateOf(false) }
-    var ocrReadyState by remember { mutableStateOf(false) }
+    var featureReadyState by remember { mutableStateOf(false) }
     var steadyState by remember { mutableStateOf(false) }
-    var liveHint by remember { mutableStateOf("Place your CNIC $sideLabel card inside the frame") }
+    var detectedFaceBoxNorm by remember { mutableStateOf<RectF?>(null) }
+    var detectedFaceSideLabel by remember { mutableStateOf<String?>(null) }
+    var liveHint by remember {
+        mutableStateOf(
+            if (isFrontSide) "Place CNIC Front inside the frame (face on left or right)"
+            else "Place CNIC Back inside the frame"
+        )
+    }
     var previewSize by remember { mutableStateOf(IntSize.Zero) }
 
-    val textRecognizer = remember { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
+    val cardFaceDetector = remember {
+        FaceDetection.getClient(
+            FaceDetectorOptions.Builder()
+                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
+                .setMinFaceSize(0.08f)
+                .build()
+        )
+    }
 
     DisposableEffect(Unit) {
         onDispose {
-            runCatching { textRecognizer.close() }
+            runCatching { cardFaceDetector.close() }
         }
     }
 
@@ -732,11 +748,11 @@ fun CnicLiveCameraOverlayScreen(
     LaunchedEffect(capturedReadyResult) {
         val result = capturedReadyResult ?: return@LaunchedEffect
         showSuccessTick = true
-        delay(620)
+        delay(550)
         onCaptured(result)
     }
 
-    fun triggerAutoCapture() {
+    fun triggerAutoCapture(hasFace: Boolean, facePos: String?) {
         val capture = imageCapture ?: return
         if (isCapturing || showSuccessTick) return
         isCapturing = true
@@ -752,26 +768,20 @@ fun CnicLiveCameraOverlayScreen(
                         isCapturing = false
                         return
                     }
-                    // Crop strictly to the exact pixels inside the green CNIC guide box
+                    // Crop strictly to the exact pixels inside the CNIC guide frame
                     val cardBitmap = cropBitmapToCnicFrame(
                         rotated = rotated,
                         previewWidthPx = vpW,
                         previewHeightPx = vpH,
                         topOffsetPx = topOffsetPx
                     )
-                    val ocrFinalText = try {
-                        val task = textRecognizer.process(InputImage.fromBitmap(cardBitmap, 0))
-                        Tasks.await(task, 2500, TimeUnit.MILLISECONDS).text
-                    } catch (_: Exception) {
-                        ""
-                    }
                     val baos = ByteArrayOutputStream()
                     cardBitmap.compress(Bitmap.CompressFormat.JPEG, 92, baos)
                     capturedReadyResult = CnicCaptureResult(
                         jpegBytes = baos.toByteArray(),
-                        extractedText = ocrFinalText,
-                        detectedCnicDigits = CnicMatchValidator.extractCnicDigits(ocrFinalText),
-                        detectedDates = CnicMatchValidator.extractIsoDates(ocrFinalText)
+                        extractedText = "",
+                        hasDetectedFace = isFrontSide && hasFace,
+                        facePosition = facePos
                     )
                 }
 
@@ -889,7 +899,7 @@ fun CnicLiveCameraOverlayScreen(
                             .apply {
                                 setAnalyzer(analyzerExecutor) { proxy ->
                                     val now = System.currentTimeMillis()
-                                    if (now - lastAnalyzedMs < 320L || isCapturing || showSuccessTick) {
+                                    if (now - lastAnalyzedMs < 240L || isCapturing || showSuccessTick) {
                                         proxy.close()
                                         return@setAnalyzer
                                     }
@@ -898,33 +908,37 @@ fun CnicLiveCameraOverlayScreen(
                                     val metrics = evaluateCnicFrame(proxy, prevSignature)
                                     prevSignature = metrics.signature
 
-                                    var ocrPlausible = false
-                                    var detectedTextLines = 0
-                                    if (metrics.meanLuma in 45.0..238.0 &&
-                                        metrics.edgeScore >= 7.5 &&
-                                        metrics.borderContrast >= 7.0
-                                    ) {
-                                        try {
-                                            val analysisBitmap = yuvImageProxyToCroppedCardBitmap(
-                                                proxy = proxy,
-                                                previewWidthPx = previewSize.width,
-                                                previewHeightPx = previewSize.height,
-                                                topOffsetPx = topOffsetPx
-                                            )
-                                            if (analysisBitmap != null) {
-                                                val ocrTask = textRecognizer.process(
-                                                    InputImage.fromBitmap(analysisBitmap, 0)
+                                    var featureMatched = false
+                                    var upsideDownFaceDetected = false
+                                    var faceNormRect: RectF? = null
+                                    var faceSideStr: String? = null
+
+                                    val cardStructureSeen = metrics.meanLuma in 40.0..242.0 &&
+                                        metrics.edgeScore >= 5.5 &&
+                                        metrics.borderContrast >= 5.5 &&
+                                        metrics.quadrantsWithTexture >= 3
+
+                                    if (cardStructureSeen) {
+                                        val analysisBitmap = yuvImageProxyToCroppedCardBitmap(
+                                            proxy = proxy,
+                                            previewWidthPx = previewSize.width,
+                                            previewHeightPx = previewSize.height,
+                                            topOffsetPx = topOffsetPx
+                                        )
+                                        if (analysisBitmap != null) {
+                                            if (isFrontSide) {
+                                                val detection = detectPrintedFaceOnCardBitmap(
+                                                    detector = cardFaceDetector,
+                                                    cardBitmap = analysisBitmap
                                                 )
-                                                val textResult = Tasks.await(ocrTask, 900, TimeUnit.MILLISECONDS)
-                                                detectedTextLines = textResult.textBlocks.sumOf { it.lines.size }
-                                                ocrPlausible = CnicMatchValidator.isPlausibleCnicFrame(
-                                                    sideLabel = sideLabel,
-                                                    rawText = textResult.text,
-                                                    lineCount = detectedTextLines
-                                                )
+                                                featureMatched = detection.faceFound
+                                                upsideDownFaceDetected = detection.upsideDownFound
+                                                faceNormRect = detection.normRect
+                                                faceSideStr = detection.sidePosition
+                                            } else {
+                                                // Back side: verify rich card back pattern across regions (QR/address/signature)
+                                                featureMatched = hasCnicBackCardTexture(analysisBitmap)
                                             }
-                                        } catch (_: Exception) {
-                                            ocrPlausible = false
                                         }
                                     }
                                     proxy.close()
@@ -932,50 +946,81 @@ fun CnicLiveCameraOverlayScreen(
                                     mainExecutor.execute {
                                         if (isCapturing || showSuccessTick) return@execute
                                         when {
-                                            metrics.meanLuma < 45 -> {
+                                            metrics.meanLuma < 40.0 -> {
                                                 confirmedCardHits = 0
                                                 cardDetectedState = false
-                                                ocrReadyState = false
+                                                featureReadyState = false
                                                 steadyState = false
+                                                detectedFaceBoxNorm = null
+                                                detectedFaceSideLabel = null
                                                 detectionProgress = 0.05f
                                                 liveHint = "Too dark — turn on flash or move to brighter light"
                                             }
-                                            metrics.edgeScore < 7.5 || metrics.borderContrast < 7.0 -> {
+                                            !cardStructureSeen -> {
                                                 confirmedCardHits = 0
                                                 cardDetectedState = false
-                                                ocrReadyState = false
+                                                featureReadyState = false
                                                 steadyState = false
-                                                detectionProgress = 0.15f
-                                                liveHint = "No card detected — align CNIC $sideLabel inside the box"
+                                                detectedFaceBoxNorm = null
+                                                detectedFaceSideLabel = null
+                                                detectionProgress = 0.16f
+                                                liveHint = "Align your physical CNIC $sideLabel inside the card frame"
                                             }
-                                            !ocrPlausible -> {
+                                            isFrontSide && upsideDownFaceDetected && !featureMatched -> {
+                                                confirmedCardHits = 0
+                                                cardDetectedState = true
+                                                featureReadyState = false
+                                                steadyState = metrics.isSteady
+                                                detectedFaceBoxNorm = null
+                                                detectedFaceSideLabel = null
+                                                detectionProgress = 0.35f
+                                                liveHint = "Card appears upside down — turn CNIC right-side up"
+                                            }
+                                            !featureMatched -> {
                                                 confirmedCardHits = (confirmedCardHits - 1).coerceAtLeast(0)
                                                 cardDetectedState = true
-                                                ocrReadyState = false
+                                                featureReadyState = false
                                                 steadyState = metrics.isSteady
-                                                detectionProgress = 0.35f
-                                                liveHint = if (detectedTextLines > 0) {
-                                                    "Reading CNIC $sideLabel text — move slightly closer & steady"
+                                                detectedFaceBoxNorm = null
+                                                detectedFaceSideLabel = null
+                                                detectionProgress = 0.40f
+                                                liveHint = if (isFrontSide) {
+                                                    "Card seen — keep the CNIC portrait face visible (left or right)"
                                                 } else {
-                                                    "Card edges seen — make sure CNIC $sideLabel text is clear"
+                                                    "Card seen — keep the CNIC back details & QR code in view"
                                                 }
                                             }
                                             !metrics.isSteady -> {
                                                 cardDetectedState = true
-                                                ocrReadyState = true
+                                                featureReadyState = true
                                                 steadyState = false
-                                                detectionProgress = 0.68f
-                                                liveHint = "CNIC $sideLabel detected! Hold steady..."
+                                                detectedFaceBoxNorm = faceNormRect
+                                                detectedFaceSideLabel = faceSideStr
+                                                detectionProgress = 0.72f
+                                                liveHint = if (isFrontSide && faceSideStr != null) {
+                                                    "Card & face detected ($faceSideStr)! Hold steady..."
+                                                } else {
+                                                    "CNIC $sideLabel detected! Hold steady..."
+                                                }
                                             }
                                             else -> {
                                                 confirmedCardHits++
                                                 cardDetectedState = true
-                                                ocrReadyState = true
+                                                featureReadyState = true
                                                 steadyState = true
-                                                detectionProgress = (0.55f + confirmedCardHits * 0.225f).coerceIn(0f, 1f)
-                                                liveHint = "CNIC $sideLabel verified — cropping card..."
+                                                detectedFaceBoxNorm = faceNormRect
+                                                detectedFaceSideLabel = faceSideStr
+                                                detectionProgress = (0.65f + confirmedCardHits * 0.175f).coerceIn(0f, 1f)
+                                                liveHint = if (isFrontSide && faceSideStr != null) {
+                                                    "Card & face locked ($faceSideStr) — taking photo..."
+                                                } else {
+                                                    "CNIC $sideLabel locked — taking photo..."
+                                                }
                                                 if (confirmedCardHits >= 2) {
-                                                    triggerAutoCapture()
+                                                    triggerAutoCapture(
+                                                        hasFace = featureMatched,
+                                                        facePos = faceSideStr
+                                                    )
                                                 }
                                             }
                                         }
@@ -1008,9 +1053,9 @@ fun CnicLiveCameraOverlayScreen(
                 modifier = Modifier.fillMaxSize()
             )
 
-            // Darkened mask + 85.6:54 ID Card frame + alignment guide + scanning beam
+            // Darkened mask + 85.6:54 ID Card frame + live detected face target + scanning beam
             val frameColor = when {
-                showSuccessTick || (cardDetectedState && ocrReadyState) -> SuccessGreen
+                showSuccessTick || (cardDetectedState && featureReadyState) -> SuccessGreen
                 else -> ZulvazaOrange
             }
 
@@ -1030,30 +1075,31 @@ fun CnicLiveCameraOverlayScreen(
 
                 // Border outline matching exact crop bounds
                 drawRoundRect(
-                    color = frameColor.copy(alpha = 0.60f),
+                    color = frameColor.copy(alpha = 0.65f),
                     topLeft = Offset(left, top),
                     size = Size(frameWidth, frameHeight),
                     cornerRadius = CornerRadius(18.dp.toPx(), 18.dp.toPx()),
                     style = Stroke(width = 2.dp.toPx())
                 )
 
-                // Subtle ID layout alignment guides inside cutout
+                // Live detected portrait highlight on CNIC Front (left, right, or center) or alignment guides
                 if (!showSuccessTick) {
-                    val guideStroke = 1.2.dp.toPx()
-                    val guideCol = Color.White.copy(alpha = 0.20f)
-                    if (sideLabel.equals("Front", ignoreCase = true)) {
-                        // Portrait box on left side + chip & detail guide lines
-                        val photoW = frameWidth * 0.22f
-                        val photoH = frameHeight * 0.44f
+                    val faceBox = detectedFaceBoxNorm
+                    if (isFrontSide && faceBox != null) {
+                        val fLeft = left + faceBox.left * frameWidth
+                        val fTop = top + faceBox.top * frameHeight
+                        val fWidth = (faceBox.width() * frameWidth).coerceAtLeast(16.dp.toPx())
+                        val fHeight = (faceBox.height() * frameHeight).coerceAtLeast(16.dp.toPx())
                         drawRoundRect(
-                            color = guideCol,
-                            topLeft = Offset(left + frameWidth * 0.06f, top + frameHeight * 0.26f),
-                            size = Size(photoW, photoH),
+                            color = SuccessGreen.copy(alpha = 0.90f),
+                            topLeft = Offset(fLeft, fTop),
+                            size = Size(fWidth, fHeight),
                             cornerRadius = CornerRadius(8.dp.toPx(), 8.dp.toPx()),
-                            style = Stroke(width = guideStroke)
+                            style = Stroke(width = 2.2.dp.toPx())
                         )
-                    } else {
-                        // QR box watermark on right for Back side
+                    } else if (!isFrontSide) {
+                        val guideStroke = 1.2.dp.toPx()
+                        val guideCol = Color.White.copy(alpha = 0.20f)
                         val qrSide = frameHeight * 0.34f
                         drawRoundRect(
                             color = guideCol,
@@ -1250,7 +1296,15 @@ fun CnicLiveCameraOverlayScreen(
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             CnicReadinessChip("Card", cardDetectedState, Modifier.weight(1f))
-                            CnicReadinessChip("OCR Text", ocrReadyState, Modifier.weight(1f))
+                            CnicReadinessChip(
+                                label = if (isFrontSide) {
+                                    if (detectedFaceSideLabel != null) "Face (${detectedFaceSideLabel})" else "CNIC Face"
+                                } else {
+                                    "Back Pattern"
+                                },
+                                ready = featureReadyState,
+                                modifier = Modifier.weight(1f)
+                            )
                             CnicReadinessChip("Steady", steadyState, Modifier.weight(1f))
                         }
 
@@ -1261,9 +1315,9 @@ fun CnicLiveCameraOverlayScreen(
                             horizontalArrangement = Arrangement.Center
                         ) {
                             Icon(
-                                imageVector = Icons.Default.DocumentScanner,
+                                imageVector = if (isFrontSide) Icons.Default.Face else Icons.Default.DocumentScanner,
                                 contentDescription = null,
-                                tint = if (cardDetectedState && ocrReadyState) SuccessGreen else ZulvazaOrange,
+                                tint = if (cardDetectedState && featureReadyState) SuccessGreen else ZulvazaOrange,
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
@@ -1278,7 +1332,7 @@ fun CnicLiveCameraOverlayScreen(
                         Spacer(modifier = Modifier.height(10.dp))
                         LinearProgressIndicator(
                             progress = { detectionProgress },
-                            color = if (cardDetectedState && ocrReadyState) SuccessGreen else ZulvazaOrange,
+                            color = if (cardDetectedState && featureReadyState) SuccessGreen else ZulvazaOrange,
                             trackColor = Color.White.copy(alpha = 0.20f),
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -1287,7 +1341,11 @@ fun CnicLiveCameraOverlayScreen(
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "Background is automatically cropped out — keep CNIC edges inside the frame.",
+                            text = if (isFrontSide) {
+                                "Photo is taken automatically as soon as the card & printed face are locked — text OCR runs in background after upload."
+                            } else {
+                                "Photo is taken automatically once CNIC back is aligned — text OCR runs in background after upload."
+                            },
                             color = Color.White.copy(alpha = 0.68f),
                             style = MaterialTheme.typography.labelSmall,
                             textAlign = TextAlign.Center
@@ -1370,9 +1428,109 @@ private data class FrameMetrics(
     val meanLuma: Double,
     val edgeScore: Double,
     val borderContrast: Double,
+    val quadrantsWithTexture: Int,
     val isSteady: Boolean,
     val signature: IntArray
 )
+
+private data class CnicCardFaceResult(
+    val faceFound: Boolean,
+    val upsideDownFound: Boolean,
+    val normRect: RectF? = null,
+    val sidePosition: String? = null
+)
+
+private fun detectPrintedFaceOnCardBitmap(
+    detector: com.google.mlkit.vision.face.FaceDetector,
+    cardBitmap: Bitmap
+): CnicCardFaceResult {
+    return try {
+        val faces = Tasks.await(
+            detector.process(InputImage.fromBitmap(cardBitmap, 0)),
+            500,
+            TimeUnit.MILLISECONDS
+        )
+        val w = cardBitmap.width.toFloat().coerceAtLeast(1f)
+        val h = cardBitmap.height.toFloat().coerceAtLeast(1f)
+        val validFace = faces.firstOrNull { face ->
+            val box = face.boundingBox
+            box.width() >= w * 0.05f && box.height() >= h * 0.10f
+        }
+        if (validFace != null) {
+            val box = validFace.boundingBox
+            val norm = RectF(
+                (box.left / w).coerceIn(0f, 1f),
+                (box.top / h).coerceIn(0f, 1f),
+                (box.right / w).coerceIn(0f, 1f),
+                (box.bottom / h).coerceIn(0f, 1f)
+            )
+            val centerX = (norm.left + norm.right) / 2f
+            val side = when {
+                centerX < 0.42f -> "Left"
+                centerX > 0.58f -> "Right"
+                else -> "Center"
+            }
+            return CnicCardFaceResult(
+                faceFound = true,
+                upsideDownFound = false,
+                normRect = norm,
+                sidePosition = side
+            )
+        }
+
+        // Fast check for 180-degree rotated card so user gets clear rotation guidance
+        val rotated180 = Matrix().let { m ->
+            m.postRotate(180f)
+            Bitmap.createBitmap(cardBitmap, 0, 0, cardBitmap.width, cardBitmap.height, m, false)
+        }
+        val upsideFaces = Tasks.await(
+            detector.process(InputImage.fromBitmap(rotated180, 0)),
+            400,
+            TimeUnit.MILLISECONDS
+        )
+        CnicCardFaceResult(
+            faceFound = false,
+            upsideDownFound = upsideFaces.isNotEmpty()
+        )
+    } catch (_: Exception) {
+        CnicCardFaceResult(faceFound = false, upsideDownFound = false)
+    }
+}
+
+private fun hasCnicBackCardTexture(cardBitmap: Bitmap): Boolean {
+    val w = cardBitmap.width
+    val h = cardBitmap.height
+    if (w < 48 || h < 32) return false
+    var nonUniformBuckets = 0
+    val cols = 3
+    val rows = 2
+    for (r in 0 until rows) {
+        for (c in 0 until cols) {
+            val sx = (w * c / cols).coerceIn(0, w - 1)
+            val ex = (w * (c + 1) / cols).coerceIn(sx + 2, w)
+            val sy = (h * r / rows).coerceIn(0, h - 1)
+            val ey = (h * (r + 1) / rows).coerceIn(sy + 2, h)
+            val stepX = ((ex - sx) / 8).coerceAtLeast(1)
+            val stepY = ((ey - sy) / 6).coerceAtLeast(1)
+            var edgeAcc = 0L
+            var count = 0
+            for (y in sy until (ey - stepY) step stepY) {
+                for (x in sx until (ex - stepX) step stepX) {
+                    val p = cardBitmap.getPixel(x, y)
+                    val pr = cardBitmap.getPixel(x + stepX, y)
+                    val lum1 = ((p shr 16) and 0xFF) * 3 + ((p shr 8) and 0xFF) * 6 + (p and 0xFF)
+                    val lum2 = ((pr shr 16) and 0xFF) * 3 + ((pr shr 8) and 0xFF) * 6 + (pr and 0xFF)
+                    edgeAcc += abs(lum1 - lum2) / 10
+                    count++
+                }
+            }
+            if (count > 0 && (edgeAcc.toDouble() / count) >= 5.0) {
+                nonUniformBuckets++
+            }
+        }
+    }
+    return nonUniformBuckets >= 4
+}
 
 private fun evaluateCnicFrame(proxy: ImageProxy, prevSignature: IntArray?): FrameMetrics {
     val yPlane = proxy.planes[0]
@@ -1385,6 +1543,8 @@ private fun evaluateCnicFrame(proxy: ImageProxy, prevSignature: IntArray?): Fram
     val endX = (width * 0.86).toInt().coerceAtLeast(startX + 16)
     val startY = (height * 0.24).toInt()
     val endY = (height * 0.76).toInt().coerceAtLeast(startY + 16)
+    val midX = (startX + endX) / 2
+    val midY = (startY + endY) / 2
 
     val gridCols = 8
     val gridRows = 5
@@ -1392,6 +1552,9 @@ private fun evaluateCnicFrame(proxy: ImageProxy, prevSignature: IntArray?): Fram
     var lumaSum = 0L
     var edgeSum = 0L
     var sampleCount = 0
+
+    val quadEdges = LongArray(4)
+    val quadCounts = IntArray(4)
 
     val stepX = ((endX - startX) / 24).coerceAtLeast(4)
     val stepY = ((endY - startY) / 16).coerceAtLeast(4)
@@ -1407,10 +1570,22 @@ private fun evaluateCnicFrame(proxy: ImageProxy, prevSignature: IntArray?): Fram
                 val p = buffer.get(idx).toInt() and 0xFF
                 val pr = buffer.get(rightIdx).toInt() and 0xFF
                 val pd = buffer.get(downIdx).toInt() and 0xFF
+                val e = abs(p - pr) + abs(p - pd)
                 lumaSum += p
-                edgeSum += abs(p - pr) + abs(p - pd)
+                edgeSum += e
                 sampleCount++
+                val qIdx = (if (y >= midY) 2 else 0) + (if (x >= midX) 1 else 0)
+                quadEdges[qIdx] += e.toLong()
+                quadCounts[qIdx]++
             }
+        }
+    }
+
+    var texturedQuadrants = 0
+    for (q in 0..3) {
+        val c = quadCounts[q].coerceAtLeast(1)
+        if ((quadEdges[q].toDouble() / c) >= 4.0) {
+            texturedQuadrants++
         }
     }
 
@@ -1446,7 +1621,7 @@ private fun evaluateCnicFrame(proxy: ImageProxy, prevSignature: IntArray?): Fram
         for (i in signature.indices) {
             diffSum += abs(signature[i] - prevSignature[i])
         }
-        (diffSum.toDouble() / signature.size) < 11.0
+        (diffSum.toDouble() / signature.size) < 11.5
     }
 
     val count = sampleCount.coerceAtLeast(1)
@@ -1454,6 +1629,7 @@ private fun evaluateCnicFrame(proxy: ImageProxy, prevSignature: IntArray?): Fram
         meanLuma = lumaSum.toDouble() / count,
         edgeScore = edgeSum.toDouble() / count,
         borderContrast = borderDiffSum.toDouble() / borderSamples.coerceAtLeast(1),
+        quadrantsWithTexture = texturedQuadrants,
         isSteady = isSteady,
         signature = signature
     )

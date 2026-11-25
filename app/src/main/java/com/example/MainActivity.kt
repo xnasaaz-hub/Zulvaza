@@ -284,6 +284,7 @@ private fun ZulvazaRootContent(
             VerificationScreen(
                 verification = state.verification,
                 store = state.store,
+                cnicOcrState = state.cnicOcrState,
                 canNavigateBack = state.openVerificationFromAccount &&
                     state.verification.status != VerificationStatus.UNSUBMITTED,
                 isBusy = state.isBusy,
@@ -292,6 +293,8 @@ private fun ZulvazaRootContent(
                 resolveFaceUrl = viewModel::resolveFacePhotoUrl,
                 resolveStoreMedia = viewModel::resolveStoreMediaUrl,
                 onUploadCnic = viewModel::uploadCnicCapture,
+                onProcessCnicOcrBackground = viewModel::processUploadedCnicOcrInBackground,
+                onVerifyCnicMatchWithBackend = viewModel::verifyIdentityMatchWithBackendOcr,
                 onUploadFacePhoto = viewModel::uploadFacePhoto,
                 onUploadStoreMediaBytes = viewModel::uploadStoreMediaBytes,
                 onCheckStoreUsername = viewModel::checkStoreUsername,

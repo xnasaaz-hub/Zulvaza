@@ -1,6 +1,7 @@
 package com.example.ui.state
 
 import android.app.Application
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.os.Build
@@ -28,10 +29,20 @@ import com.example.data.remote.SupabaseClient
 import com.example.data.remote.SupabaseConfig
 import com.example.data.remote.SupabaseException
 import com.example.ui.theme.ThemeMode
+import com.example.util.CnicMatchValidationResult
+import com.example.util.CnicMatchValidator
+import com.example.util.ExtractedCnicDetails
 import com.example.util.Formatters
 import com.example.util.NetworkMonitor
 import com.example.util.NotificationHelper
+import com.google.android.gms.tasks.Tasks
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.face.FaceDetection
+import com.google.mlkit.vision.face.FaceDetectorOptions
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -42,6 +53,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 
 enum class RootDestination {
     SPLASH,
@@ -63,6 +75,24 @@ data class ToastBanner(
     val message: String,
     val isError: Boolean = false,
     val id: Long = System.currentTimeMillis()
+)
+
+enum class CnicOcrStatus {
+    IDLE,
+    PROCESSING,
+    COMPLETED,
+    FAILED
+}
+
+data class CnicOcrBackgroundState(
+    val status: CnicOcrStatus = CnicOcrStatus.IDLE,
+    val frontText: String = "",
+    val backText: String = "",
+    val extracted: ExtractedCnicDetails = ExtractedCnicDetails(),
+    val frontFaceDetected: Boolean = false,
+    val isVerifyingMatch: Boolean = false,
+    val matchResult: CnicMatchValidationResult? = null,
+    val errorMessage: String? = null
 )
 
 data class SellerUiState(
@@ -99,7 +129,8 @@ data class SellerUiState(
     val appUpdateStatus: AppUpdateStatus = AppUpdateStatus.Idle,
     val notifications: List<SellerNotificationItem> = emptyList(),
     val permissionsPromptCompleted: Boolean = true,
-    val usernameConflictNonce: Int = 0
+    val usernameConflictNonce: Int = 0,
+    val cnicOcrState: CnicOcrBackgroundState = CnicOcrBackgroundState()
 ) {
     val unreadNotificationCount: Int
         get() = notifications.count { !it.isRead }
@@ -114,6 +145,7 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
     val uiState: StateFlow<SellerUiState> = _uiState.asStateFlow()
 
     private var pendingDeepLink: DeepLinkDestination? = null
+    private var cnicOcrJob: Job? = null
 
     init {
         NotificationHelper.ensureChannel(application.applicationContext)
@@ -842,6 +874,7 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun signOut() {
+        cnicOcrJob?.cancel()
         viewModelScope.launch {
             _uiState.value.session?.let { supabase.signOut(it) }
             sessionStore.clearSession()
@@ -1136,7 +1169,12 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
                 }
             } catch (e: Exception) {
                 _uiState.update {
-                    it.copy(appUpdateStatus = AppUpdateStatus.Error(e.message ?: "Download failed"))
+                    it.copy(
+                        appUpdateStatus = AppUpdateStatus.Error(
+                            message = e.message ?: "Download failed",
+                            htmlUrl = release.htmlUrl.takeIf { url -> url.isNotBlank() }
+                        )
+                    )
                 }
             }
         }
@@ -1366,6 +1404,164 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     // ==================== VERIFICATION ====================
+
+    fun processUploadedCnicOcrInBackground(
+        frontBytes: ByteArray,
+        backBytes: ByteArray,
+        frontHasFace: Boolean
+    ) {
+        cnicOcrJob?.cancel()
+        cnicOcrJob = viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    cnicOcrState = CnicOcrBackgroundState(
+                        status = CnicOcrStatus.PROCESSING,
+                        frontFaceDetected = frontHasFace
+                    )
+                )
+            }
+            val resultState = runCnicOcrOnBytes(
+                frontBytes = frontBytes,
+                backBytes = backBytes,
+                frontFaceAlreadyDetected = frontHasFace
+            )
+            _uiState.update { it.copy(cnicOcrState = resultState) }
+        }
+    }
+
+    suspend fun verifyIdentityMatchWithBackendOcr(
+        fullName: String,
+        cnicDigits: String,
+        issueDateIso: String,
+        expiryDateIso: String,
+        cnicFrontPath: String,
+        cnicBackPath: String
+    ): CnicMatchValidationResult {
+        _uiState.update { st ->
+            st.copy(cnicOcrState = st.cnicOcrState.copy(isVerifyingMatch = true))
+        }
+        return try {
+            cnicOcrJob?.join()
+            var ocrState = _uiState.value.cnicOcrState
+
+            // If OCR hasn't run locally (e.g., resuming verification after restarting app),
+            // fetch the uploaded CNIC front & back from backend storage and run OCR now.
+            if ((ocrState.frontText.isBlank() && ocrState.backText.isBlank()) &&
+                cnicFrontPath.isNotBlank() && cnicBackPath.isNotBlank()
+            ) {
+                val downloadedOcr = runCatching {
+                    withValidSession { session ->
+                        val frontBytes = supabase.downloadAuthenticatedStorageBytes(
+                            session = session,
+                            bucket = SupabaseConfig.BUCKET_SELLER_KYC,
+                            objectPath = cnicFrontPath
+                        )
+                        val backBytes = supabase.downloadAuthenticatedStorageBytes(
+                            session = session,
+                            bucket = SupabaseConfig.BUCKET_SELLER_KYC,
+                            objectPath = cnicBackPath
+                        )
+                        runCnicOcrOnBytes(frontBytes, backBytes, frontFaceAlreadyDetected = false)
+                    }
+                }.getOrNull()
+                if (downloadedOcr != null) {
+                    ocrState = downloadedOcr
+                }
+            }
+
+            val validation = CnicMatchValidator.validateAgainstEnteredDetails(
+                fullName = fullName,
+                cnicDigits = cnicDigits,
+                issueDateIso = issueDateIso,
+                expiryDateIso = expiryDateIso,
+                frontText = ocrState.frontText,
+                backText = ocrState.backText
+            )
+            _uiState.update { st ->
+                st.copy(
+                    cnicOcrState = ocrState.copy(
+                        isVerifyingMatch = false,
+                        matchResult = validation
+                    )
+                )
+            }
+            validation
+        } catch (e: Exception) {
+            _uiState.update { st ->
+                st.copy(cnicOcrState = st.cnicOcrState.copy(isVerifyingMatch = false))
+            }
+            CnicMatchValidationResult(isMatch = true)
+        }
+    }
+
+    private suspend fun runCnicOcrOnBytes(
+        frontBytes: ByteArray,
+        backBytes: ByteArray,
+        frontFaceAlreadyDetected: Boolean
+    ): CnicOcrBackgroundState = withContext(Dispatchers.Default) {
+        val textRecognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+        val faceDetector = FaceDetection.getClient(
+            FaceDetectorOptions.Builder()
+                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
+                .setMinFaceSize(0.08f)
+                .build()
+        )
+        try {
+            val frontBmp = BitmapFactory.decodeByteArray(frontBytes, 0, frontBytes.size)
+            val backBmp = BitmapFactory.decodeByteArray(backBytes, 0, backBytes.size)
+
+            val frontText = if (frontBmp != null) {
+                runCatching {
+                    Tasks.await(
+                        textRecognizer.process(InputImage.fromBitmap(frontBmp, 0)),
+                        6000,
+                        TimeUnit.MILLISECONDS
+                    ).text
+                }.getOrDefault("")
+            } else ""
+
+            val backText = if (backBmp != null) {
+                runCatching {
+                    Tasks.await(
+                        textRecognizer.process(InputImage.fromBitmap(backBmp, 0)),
+                        6000,
+                        TimeUnit.MILLISECONDS
+                    ).text
+                }.getOrDefault("")
+            } else ""
+
+            val hasFace = frontFaceAlreadyDetected || if (frontBmp != null) {
+                runCatching {
+                    Tasks.await(
+                        faceDetector.process(InputImage.fromBitmap(frontBmp, 0)),
+                        2500,
+                        TimeUnit.MILLISECONDS
+                    ).isNotEmpty()
+                }.getOrDefault(false)
+            } else false
+
+            val extracted = CnicMatchValidator.extractCnicDetails(
+                frontText = frontText,
+                backText = backText
+            )
+            CnicOcrBackgroundState(
+                status = CnicOcrStatus.COMPLETED,
+                frontText = frontText,
+                backText = backText,
+                extracted = extracted,
+                frontFaceDetected = hasFace
+            )
+        } catch (e: Exception) {
+            CnicOcrBackgroundState(
+                status = CnicOcrStatus.FAILED,
+                frontFaceDetected = frontFaceAlreadyDetected,
+                errorMessage = e.message ?: "Background OCR failed"
+            )
+        } finally {
+            runCatching { textRecognizer.close() }
+            runCatching { faceDetector.close() }
+        }
+    }
 
     suspend fun uploadCnicCapture(bytes: ByteArray, side: String): String {
         require(bytes.isNotEmpty()) { "Captured CNIC image is empty" }

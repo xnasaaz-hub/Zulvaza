@@ -20,9 +20,9 @@ object SupabaseConfig {
     const val DEFAULT_GITHUB_REPO = "xnasaaz-hub/Zulvaza-Seller-Center"
 
     val CURRENT_VERSION_CHANGELOG = listOf(
-        "Guided 5-step verification flow: CNIC front/back flip scanner, 5-direction Face Liveness, auto-filled identity details, contact & store setup",
-        "Exact frame-cropped CNIC scanning and live voice/visual face liveness capture",
-        "Redesigned Store Logo (1:1) & Cover Banner (16:9) cropper directly on My Store with clean preview, delete & change",
-        "Fixed notification icons and instant notifications for KYC decisions, logins & app updates"
+        "Smart CNIC Card + Face Detection scanner: detects the physical card and printed face (left or right) to capture clean photos instantly",
+        "Background CNIC OCR & server match verification runs automatically after upload",
+        "Automatic GitHub Release publishing and improved in-app APK updater with signature matching",
+        "5-step verification flow with directional face liveness, store logo/banner cropper, and real-time notifications"
     )
 }

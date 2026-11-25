@@ -678,7 +678,12 @@ class SupabaseClient {
             address2 = detailsObj.optString("address2"),
             zipCode = detailsObj.optString("zip_code"),
             latitude = if (detailsObj.isNull("latitude")) null else detailsObj.optDouble("latitude").takeIf { !it.isNaN() },
-            longitude = if (detailsObj.isNull("longitude")) null else detailsObj.optDouble("longitude").takeIf { !it.isNaN() }
+            longitude = if (detailsObj.isNull("longitude")) null else detailsObj.optDouble("longitude").takeIf { !it.isNaN() },
+            ocrFrontText = detailsObj.optString("ocr_front_text"),
+            ocrBackText = detailsObj.optString("ocr_back_text"),
+            ocrMatchPassed = detailsObj.optBoolean("ocr_match_passed", false),
+            ocrMatchSummary = detailsObj.optString("ocr_match_summary"),
+            cnicFaceDetected = detailsObj.optBoolean("cnic_face_detected", false)
         )
         return SellerVerification(
             sellerId = obj.optString("seller_id", session.userId),
@@ -715,6 +720,17 @@ class SupabaseClient {
             put("zip_code", details.zipCode.filter { it.isDigit() })
             put("latitude", details.latitude ?: JSONObject.NULL)
             put("longitude", details.longitude ?: JSONObject.NULL)
+            put("cnic_face_detected", details.cnicFaceDetected)
+            put("ocr_match_passed", details.ocrMatchPassed)
+            if (details.ocrMatchSummary.isNotBlank()) {
+                put("ocr_match_summary", details.ocrMatchSummary)
+            }
+            if (details.ocrFrontText.isNotBlank()) {
+                put("ocr_front_text", details.ocrFrontText.take(4000))
+            }
+            if (details.ocrBackText.isNotBlank()) {
+                put("ocr_back_text", details.ocrBackText.take(4000))
+            }
         }
         val payload = JSONObject().apply { put("_details", detailsJson) }
         executeJson(
@@ -1240,5 +1256,21 @@ class SupabaseClient {
             objectPath = objectPath,
             expiresInSec = expiresInSec
         )
+    }
+
+    suspend fun downloadAuthenticatedStorageBytes(
+        session: UserSession,
+        bucket: String,
+        objectPath: String
+    ): ByteArray = withContext(Dispatchers.IO) {
+        val signedUrl = createSignedUrl(session, bucket, objectPath, expiresInSec = 600)
+            ?: throw SupabaseException("Unable to access stored document")
+        val req = Request.Builder().url(signedUrl).get().build()
+        client.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) {
+                throw SupabaseException("Failed to read stored document (${resp.code})", statusCode = resp.code)
+            }
+            resp.body?.bytes() ?: throw SupabaseException("Stored document is empty")
+        }
     }
 }

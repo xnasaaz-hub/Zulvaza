@@ -75,6 +75,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -107,11 +108,14 @@ import com.example.ui.components.LocationGpsSection
 import com.example.ui.components.SignedRemoteImage
 import com.example.ui.components.StoreUsernameField
 import com.example.ui.components.StoreUsernameUiState
+import com.example.ui.state.CnicOcrBackgroundState
+import com.example.ui.state.CnicOcrStatus
 import com.example.ui.theme.ErrorRed
 import com.example.ui.theme.ErrorRedSoft
 import com.example.ui.theme.SuccessGreen
 import com.example.ui.theme.ZulvazaNavy
 import com.example.ui.theme.ZulvazaOrange
+import com.example.util.CnicMatchValidationResult
 import com.example.util.CnicMatchValidator
 import com.example.util.CnicVisualTransformation
 import com.example.util.Formatters
@@ -126,6 +130,7 @@ import java.util.TimeZone
 fun VerificationScreen(
     verification: SellerVerification,
     store: SellerStore?,
+    cnicOcrState: CnicOcrBackgroundState,
     canNavigateBack: Boolean,
     isBusy: Boolean,
     usernameConflictNonce: Int = 0,
@@ -133,6 +138,8 @@ fun VerificationScreen(
     resolveFaceUrl: (String) -> String?,
     resolveStoreMedia: (String?) -> String?,
     onUploadCnic: suspend (ByteArray, String) -> String,
+    onProcessCnicOcrBackground: (ByteArray, ByteArray, Boolean) -> Unit,
+    onVerifyCnicMatchWithBackend: suspend (String, String, String, String, String, String) -> CnicMatchValidationResult,
     onUploadFacePhoto: suspend (ByteArray) -> String,
     onUploadStoreMediaBytes: suspend (ByteArray, String, String, String?, (Float) -> Unit) -> String,
     onCheckStoreUsername: suspend (String) -> String,
@@ -157,8 +164,13 @@ fun VerificationScreen(
     var uploadingStoreBanner by remember { mutableStateOf(false) }
 
     // OCR state & local preview bytes
-    var frontScanOcrText by remember(verification) { mutableStateOf<String?>(null) }
-    var backScanOcrText by remember(verification) { mutableStateOf<String?>(null) }
+    var frontScanOcrText by remember(verification) {
+        mutableStateOf(verification.details.ocrFrontText.takeIf { it.isNotBlank() })
+    }
+    var backScanOcrText by remember(verification) {
+        mutableStateOf(verification.details.ocrBackText.takeIf { it.isNotBlank() })
+    }
+    var ocrAppliedForScan by remember { mutableStateOf(false) }
     var localFrontBytes by remember { mutableStateOf<ByteArray?>(null) }
     var localBackBytes by remember { mutableStateOf<ByteArray?>(null) }
     var localFaceBytes by remember { mutableStateOf<ByteArray?>(null) }
@@ -177,6 +189,24 @@ fun VerificationScreen(
     var cnicFrontPath by remember(verification) { mutableStateOf(initial.cnicFront) }
     var cnicBackPath by remember(verification) { mutableStateOf(initial.cnicBack) }
     var facePhotoPath by remember(verification) { mutableStateOf(initial.facePhoto) }
+
+    // Apply background OCR extraction results automatically as soon as ready
+    LaunchedEffect(cnicOcrState.status, cnicOcrState.extracted) {
+        if (cnicOcrState.status == CnicOcrStatus.COMPLETED) {
+            if (cnicOcrState.frontText.isNotBlank()) frontScanOcrText = cnicOcrState.frontText
+            if (cnicOcrState.backText.isNotBlank()) backScanOcrText = cnicOcrState.backText
+            if (!ocrAppliedForScan) {
+                val ex = cnicOcrState.extracted
+                if (ex.fullName.isNotBlank() && fullName.isBlank()) fullName = ex.fullName
+                if (ex.cnicDigits.length == 13 && cnicDigits.length != 13) cnicDigits = ex.cnicDigits
+                if (ex.dateOfBirth.isNotBlank() && dateOfBirth.isBlank()) dateOfBirth = ex.dateOfBirth
+                if (ex.issueDate.isNotBlank() && issueDate.isBlank()) issueDate = ex.issueDate
+                if (ex.expiryDate.isNotBlank() && expiryDate.isBlank()) expiryDate = ex.expiryDate
+                if (ex.gender.isNotBlank()) gender = ex.gender
+                ocrAppliedForScan = true
+            }
+        }
+    }
 
     // Contact & Location (Step 4)
     var phoneDigits by remember(verification) { mutableStateOf(Formatters.formatLocalPakistanPhone(initial.phone)) }
@@ -231,21 +261,10 @@ fun VerificationScreen(
                 cnicRescanStartSide = null
                 localFrontBytes = dual.front.jpegBytes
                 localBackBytes = dual.back.jpegBytes
-                frontScanOcrText = dual.front.extractedText
-                backScanOcrText = dual.back.extractedText
+                frontScanOcrText = null
+                backScanOcrText = null
+                ocrAppliedForScan = false
                 scanMismatches = emptyList()
-
-                // Auto-populate Step 3 identity fields from cropped CNIC OCR
-                val extracted = CnicMatchValidator.extractCnicDetails(
-                    frontText = dual.front.extractedText,
-                    backText = dual.back.extractedText
-                )
-                if (extracted.fullName.isNotBlank()) fullName = extracted.fullName
-                if (extracted.cnicDigits.length == 13) cnicDigits = extracted.cnicDigits
-                if (extracted.dateOfBirth.isNotBlank()) dateOfBirth = extracted.dateOfBirth
-                if (extracted.issueDate.isNotBlank()) issueDate = extracted.issueDate
-                if (extracted.expiryDate.isNotBlank()) expiryDate = extracted.expiryDate
-                if (extracted.gender.isNotBlank()) gender = extracted.gender
 
                 isUploadingCnic = true
                 scope.launch {
@@ -254,7 +273,13 @@ fun VerificationScreen(
                         val backPath = onUploadCnic(dual.back.jpegBytes, "back")
                         cnicFrontPath = frontPath
                         cnicBackPath = backPath
-                        onToast("CNIC Front & Back scanned and uploaded", false)
+                        // Run OCR & verification extraction in background right after upload completes
+                        onProcessCnicOcrBackground(
+                            dual.front.jpegBytes,
+                            dual.back.jpegBytes,
+                            dual.front.hasDetectedFace
+                        )
+                        onToast("CNIC images uploaded — OCR reading in background", false)
                     } catch (e: Exception) {
                         onToast(e.message ?: "Failed to upload CNIC images", true)
                     } finally {
@@ -580,6 +605,64 @@ fun VerificationScreen(
                                     )
                                 }
                             }
+                            if (cnicFrontPath.isNotBlank() && cnicBackPath.isNotBlank() && !isUploadingCnic) {
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Surface(
+                                    color = if (cnicOcrState.status == CnicOcrStatus.COMPLETED) {
+                                        SuccessGreen.copy(alpha = 0.10f)
+                                    } else {
+                                        ZulvazaOrange.copy(alpha = 0.10f)
+                                    },
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        if (cnicOcrState.status == CnicOcrStatus.PROCESSING) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(16.dp),
+                                                strokeWidth = 2.dp,
+                                                color = ZulvazaOrange
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(
+                                                text = "Running CNIC text OCR in the background — you can continue.",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = ZulvazaOrange
+                                            )
+                                        } else if (cnicOcrState.status == CnicOcrStatus.COMPLETED) {
+                                            Icon(
+                                                imageVector = Icons.Default.CheckCircle,
+                                                contentDescription = null,
+                                                tint = SuccessGreen,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(
+                                                text = "Background CNIC OCR & card check completed.",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = SuccessGreen,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        } else {
+                                            Icon(
+                                                imageVector = Icons.Default.CheckCircle,
+                                                contentDescription = null,
+                                                tint = SuccessGreen,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(
+                                                text = "Both CNIC sides uploaded cleanly.",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = SuccessGreen
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -613,7 +696,7 @@ fun VerificationScreen(
                         ) {
                             Text(
                                 text = if (isUploadingCnic) {
-                                    "Uploading scanned CNIC images & running OCR check..."
+                                    "Uploading cropped CNIC images to server..."
                                 } else {
                                     "Scan both Front & Back sides of your CNIC card to unlock Next."
                                 },
@@ -814,10 +897,61 @@ fun VerificationScreen(
 
                             Text("Identity Details (Verify CNIC Match)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                             Text(
-                                "Confirm your details match your scanned CNIC card.",
+                                "Confirm your details match your uploaded CNIC card.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+
+                            if (cnicOcrState.status == CnicOcrStatus.PROCESSING || cnicOcrState.isVerifyingMatch) {
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Surface(
+                                    color = ZulvazaOrange.copy(alpha = 0.10f),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(16.dp),
+                                            strokeWidth = 2.dp,
+                                            color = ZulvazaOrange
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = if (cnicOcrState.isVerifyingMatch) {
+                                                "Verifying details against uploaded CNIC..."
+                                            } else {
+                                                "Completing background OCR from uploaded CNIC..."
+                                            },
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = ZulvazaOrange
+                                        )
+                                    }
+                                }
+                            } else if (cnicOcrState.status == CnicOcrStatus.COMPLETED) {
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Surface(
+                                    color = SuccessGreen.copy(alpha = 0.10f),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = SuccessGreen, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = "Background CNIC OCR ready for match verification",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = SuccessGreen,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
+                                }
+                            }
                             Spacer(modifier = Modifier.height(14.dp))
 
                             OutlinedTextField(
@@ -1002,31 +1136,44 @@ fun VerificationScreen(
                                     issueDate.isBlank() || expiryDate.isBlank() -> onToast("Select CNIC issue and expiry dates", true)
                                     expiryDate <= issueDate -> onToast("CNIC expiry date must be after issue date", true)
                                     else -> {
-                                        val matchResult = CnicMatchValidator.validateAgainstEnteredDetails(
-                                            fullName = fullName,
-                                            cnicDigits = cnicDigits,
-                                            issueDateIso = issueDate,
-                                            expiryDateIso = expiryDate,
-                                            frontText = frontScanOcrText,
-                                            backText = backScanOcrText
-                                        )
-                                        if (!matchResult.isMatch) {
-                                            scanMismatches = matchResult.mismatches
-                                            onToast("Entered details do not match your scanned CNIC card.", true)
-                                        } else {
-                                            scanMismatches = emptyList()
-                                            step = 4
+                                        scope.launch {
+                                            val matchResult = onVerifyCnicMatchWithBackend(
+                                                fullName,
+                                                cnicDigits,
+                                                issueDate,
+                                                expiryDate,
+                                                cnicFrontPath,
+                                                cnicBackPath
+                                            )
+                                            if (!matchResult.isMatch) {
+                                                scanMismatches = matchResult.mismatches
+                                                onToast("Entered details do not match your uploaded CNIC card.", true)
+                                            } else {
+                                                scanMismatches = emptyList()
+                                                step = 4
+                                            }
                                         }
                                     }
                                 }
                             },
+                            enabled = !cnicOcrState.isVerifyingMatch,
                             shape = RoundedCornerShape(16.dp),
                             modifier = Modifier
                                 .weight(0.65f)
                                 .defaultMinSize(minHeight = 52.dp)
                                 .testTag("kyc_next_step_button")
                         ) {
-                            Text("Continue to Contact", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (cnicOcrState.isVerifyingMatch) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = Color.White
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Checking CNIC...", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            } else {
+                                Text("Continue to Contact", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
                         }
                     }
                 }
@@ -1478,6 +1625,16 @@ fun VerificationScreen(
                                     shopName.isBlank() -> onToast("Enter your store name", true)
                                     !usernameUiState.canProceed -> onToast("Choose an available store username", true)
                                     else -> {
+                                        val ocrFront = cnicOcrState.frontText.ifBlank { frontScanOcrText.orEmpty() }
+                                        val ocrBack = cnicOcrState.backText.ifBlank { backScanOcrText.orEmpty() }
+                                        val finalValidation = CnicMatchValidator.validateAgainstEnteredDetails(
+                                            fullName = fullName.trim(),
+                                            cnicDigits = cnicDigits,
+                                            issueDateIso = issueDate,
+                                            expiryDateIso = expiryDate,
+                                            frontText = ocrFront,
+                                            backText = ocrBack
+                                        )
                                         val finalDetails = SellerIdentityDetails(
                                             fullName = fullName.trim(),
                                             cnic = cnicDigits,
@@ -1497,7 +1654,16 @@ fun VerificationScreen(
                                             address2 = address2.trim(),
                                             zipCode = zipCode,
                                             latitude = latitude,
-                                            longitude = longitude
+                                            longitude = longitude,
+                                            ocrFrontText = ocrFront,
+                                            ocrBackText = ocrBack,
+                                            ocrMatchPassed = finalValidation.isMatch,
+                                            ocrMatchSummary = CnicMatchValidator.buildMatchSummary(
+                                                extracted = cnicOcrState.extracted,
+                                                validation = finalValidation,
+                                                faceDetectedOnFront = cnicOcrState.frontFaceDetected
+                                            ),
+                                            cnicFaceDetected = cnicOcrState.frontFaceDetected
                                         )
                                         val finalStore = SellerStore(
                                             sellerId = store?.sellerId.orEmpty(),
