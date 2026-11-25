@@ -41,8 +41,10 @@ import androidx.compose.material.icons.filled.InstallMobile
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.LockReset
+import androidx.compose.material.icons.filled.MarkEmailRead
 import androidx.compose.material.icons.filled.PhonelinkLock
 import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Storefront
@@ -69,6 +71,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -82,10 +85,13 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.text.KeyboardOptions
 import com.example.BuildConfig
 import com.example.data.model.ActiveDeviceSession
 import com.example.data.model.MfaFactor
@@ -96,6 +102,7 @@ import com.example.data.model.SellerVerification
 import com.example.data.model.UserSession
 import com.example.data.model.VerificationStatus
 import com.example.data.remote.AppUpdateStatus
+import com.example.data.remote.PasswordChangeOtpMode
 import com.example.data.remote.SupabaseConfig
 import com.example.ui.components.OtpCodeBoxes
 import com.example.ui.components.QrCodeImage
@@ -139,7 +146,8 @@ fun AccountScreen(
     resolveDocUrl: (String) -> String?,
     resolveFaceUrl: (String) -> String?,
     onOpenVerificationEditor: () -> Unit,
-    onUpdatePassword: (String, String, () -> Unit) -> Unit,
+    onRequestPasswordOtp: (String, (PasswordChangeOtpMode, String) -> Unit) -> Unit,
+    onConfirmPasswordChange: (String, String, PasswordChangeOtpMode, String, () -> Unit) -> Unit,
     onStartTotpEnroll: () -> Unit,
     onConfirmTotpEnroll: (String) -> Unit,
     onCancelTotpEnroll: () -> Unit,
@@ -231,7 +239,8 @@ fun AccountScreen(
 
         AccountSubScreen.SECURITY_PASSWORD -> ChangePasswordPage(
             isBusy = isBusy,
-            onUpdatePassword = onUpdatePassword,
+            onRequestPasswordOtp = onRequestPasswordOtp,
+            onConfirmPasswordChange = onConfirmPasswordChange,
             onToast = onToast,
             onBack = { subScreen = AccountSubScreen.SECURITY_HUB }
         )
@@ -964,7 +973,8 @@ private fun TwoFactorSecurityPage(
 @Composable
 private fun ChangePasswordPage(
     isBusy: Boolean,
-    onUpdatePassword: (String, String, () -> Unit) -> Unit,
+    onRequestPasswordOtp: (String, (PasswordChangeOtpMode, String) -> Unit) -> Unit,
+    onConfirmPasswordChange: (String, String, PasswordChangeOtpMode, String, () -> Unit) -> Unit,
     onToast: (String, Boolean) -> Unit,
     onBack: () -> Unit
 ) {
@@ -978,10 +988,26 @@ private fun ChangePasswordPage(
     var showNew by remember { mutableStateOf(false) }
     var showConfirm by remember { mutableStateOf(false) }
 
+    var otpSent by remember { mutableStateOf(false) }
+    var otpCode by remember { mutableStateOf("") }
+    var otpMode by remember { mutableStateOf(PasswordChangeOtpMode.REAUTHENTICATE_NONCE) }
+    var otpEmail by remember { mutableStateOf("") }
+    var resendSeconds by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(otpSent, resendSeconds) {
+        if (otpSent && resendSeconds > 0) {
+            delay(1000)
+            resendSeconds--
+        }
+    }
+
     val currentPwRequester = remember { BringIntoViewRequester() }
     val newPwRequester = remember { BringIntoViewRequester() }
     val confirmPwRequester = remember { BringIntoViewRequester() }
     val strength = Formatters.evaluatePasswordStrength(newPassword)
+    val lengthOk = newPassword.length >= 8
+    val hasLetterAndNumber = newPassword.any { it.isDigit() } && newPassword.any { it.isLetter() }
+    val hasSymbol = newPassword.any { !it.isLetterOrDigit() }
 
     Column(
         modifier = Modifier
@@ -1009,18 +1035,30 @@ private fun ChangePasswordPage(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Surface(
                         shape = CircleShape,
-                        color = ZulvazaNavy.copy(alpha = 0.1f),
-                        modifier = Modifier.size(42.dp)
+                        color = (if (otpSent) ZulvazaOrange else ZulvazaNavy).copy(alpha = 0.12f),
+                        modifier = Modifier.size(44.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
-                            Icon(Icons.Default.Key, contentDescription = null, tint = ZulvazaNavy)
+                            Icon(
+                                imageVector = if (otpSent) Icons.Default.MarkEmailRead else Icons.Default.Key,
+                                contentDescription = null,
+                                tint = if (otpSent) ZulvazaOrange else ZulvazaNavy
+                            )
                         }
                     }
                     Spacer(modifier = Modifier.width(12.dp))
                     Column {
-                        Text("Update Password", style = MaterialTheme.typography.titleMedium)
                         Text(
-                            "Enter current password, then a new 8+ char password",
+                            text = if (otpSent) "Verify Email OTP" else "Update Password",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = if (otpSent) {
+                                "Enter the 6-digit code sent to $otpEmail"
+                            } else {
+                                "Verify current password, choose a strong password, then confirm via Email OTP"
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1029,134 +1067,281 @@ private fun ChangePasswordPage(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                OutlinedTextField(
-                    value = currentPassword,
-                    onValueChange = { currentPassword = it },
-                    label = { Text("Current Password") },
-                    visualTransformation = if (showCurrent) VisualTransformation.None else PasswordVisualTransformation(),
-                    trailingIcon = {
-                        IconButton(onClick = { showCurrent = !showCurrent }) {
-                            Icon(
-                                imageVector = if (showCurrent) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                contentDescription = if (showCurrent) "Hide password" else "Show password"
-                            )
+                if (!otpSent) {
+                    OutlinedTextField(
+                        value = currentPassword,
+                        onValueChange = { currentPassword = it },
+                        label = { Text("Current Password") },
+                        visualTransformation = if (showCurrent) VisualTransformation.None else PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Password,
+                            imeAction = ImeAction.Next
+                        ),
+                        trailingIcon = {
+                            IconButton(onClick = { showCurrent = !showCurrent }) {
+                                Icon(
+                                    imageVector = if (showCurrent) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = if (showCurrent) "Hide password" else "Show password"
+                                )
+                            }
+                        },
+                        singleLine = true,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .bringIntoViewRequester(currentPwRequester)
+                            .onFocusEvent { if (it.isFocused) scope.launch { delay(180); currentPwRequester.bringIntoView() } }
+                            .testTag("current_password_input")
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = newPassword,
+                        onValueChange = { newPassword = it },
+                        label = { Text("New Password") },
+                        visualTransformation = if (showNew) VisualTransformation.None else PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Password,
+                            imeAction = ImeAction.Next
+                        ),
+                        trailingIcon = {
+                            IconButton(onClick = { showNew = !showNew }) {
+                                Icon(
+                                    imageVector = if (showNew) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = if (showNew) "Hide password" else "Show password"
+                                )
+                            }
+                        },
+                        singleLine = true,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .bringIntoViewRequester(newPwRequester)
+                            .onFocusEvent { if (it.isFocused) scope.launch { delay(180); newPwRequester.bringIntoView() } }
+                            .testTag("new_password_input")
+                    )
+
+                    if (newPassword.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        val (label, color) = when (strength) {
+                            PasswordStrength.STRONG -> "Strong password" to SuccessGreen
+                            PasswordStrength.MEDIUM -> "Medium strength" to WarningAmber
+                            else -> "Weak (min 8 chars)" to ErrorRed
                         }
-                    },
-                    singleLine = true,
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .bringIntoViewRequester(currentPwRequester)
-                        .onFocusEvent { if (it.isFocused) scope.launch { delay(180); currentPwRequester.bringIntoView() } }
-                        .testTag("current_password_input")
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                OutlinedTextField(
-                    value = newPassword,
-                    onValueChange = { newPassword = it },
-                    label = { Text("New Password") },
-                    visualTransformation = if (showNew) VisualTransformation.None else PasswordVisualTransformation(),
-                    trailingIcon = {
-                        IconButton(onClick = { showNew = !showNew }) {
-                            Icon(
-                                imageVector = if (showNew) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                contentDescription = if (showNew) "Hide password" else "Show password"
-                            )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            repeat(3) { idx ->
+                                val filled = idx < strength.level
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(5.dp)
+                                        .clip(CircleShape)
+                                        .background(if (filled) color else MaterialTheme.colorScheme.outline)
+                                )
+                            }
                         }
-                    },
-                    singleLine = true,
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .bringIntoViewRequester(newPwRequester)
-                        .onFocusEvent { if (it.isFocused) scope.launch { delay(180); newPwRequester.bringIntoView() } }
-                        .testTag("new_password_input")
-                )
-
-                if (newPassword.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    val (label, color) = when (strength) {
-                        PasswordStrength.STRONG -> "Strong password" to SuccessGreen
-                        PasswordStrength.MEDIUM -> "Medium strength" to WarningAmber
-                        else -> "Weak (min 8 chars)" to ErrorRed
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(label, style = MaterialTheme.typography.labelSmall, color = color, fontWeight = FontWeight.SemiBold)
+                            Text("${newPassword.length} chars", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        PasswordRuleRow("Minimum 8 characters", lengthOk)
+                        PasswordRuleRow("Letters & numbers", hasLetterAndNumber)
+                        PasswordRuleRow("Special symbol (!@#$%^&*)", hasSymbol)
                     }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = confirmPassword,
+                        onValueChange = { confirmPassword = it },
+                        label = { Text("Confirm New Password") },
+                        visualTransformation = if (showConfirm) VisualTransformation.None else PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Password,
+                            imeAction = ImeAction.Done
+                        ),
+                        trailingIcon = {
+                            IconButton(onClick = { showConfirm = !showConfirm }) {
+                                Icon(
+                                    imageVector = if (showConfirm) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = if (showConfirm) "Hide password" else "Show password"
+                                )
+                            }
+                        },
+                        singleLine = true,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .bringIntoViewRequester(confirmPwRequester)
+                            .onFocusEvent { if (it.isFocused) scope.launch { delay(180); confirmPwRequester.bringIntoView() } }
+                            .testTag("confirm_password_input")
+                    )
+
+                    if (confirmPassword.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        val matched = newPassword == confirmPassword
+                        Text(
+                            text = if (matched) "Passwords match" else "Passwords do not match",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (matched) SuccessGreen else ErrorRed,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(18.dp))
+
+                    Button(
+                        onClick = {
+                            when {
+                                currentPassword.isEmpty() -> onToast("Enter your current password", true)
+                                newPassword.length < 8 -> onToast("New password must be at least 8 characters", true)
+                                newPassword != confirmPassword -> onToast("New passwords do not match", true)
+                                currentPassword == newPassword -> onToast("New password must be different from current password", true)
+                                else -> onRequestPasswordOtp(currentPassword) { mode, email ->
+                                    otpMode = mode
+                                    otpEmail = email
+                                    otpCode = ""
+                                    resendSeconds = 60
+                                    otpSent = true
+                                }
+                            }
+                        },
+                        enabled = !isBusy,
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 52.dp)
+                            .testTag("send_password_otp_button")
+                    ) {
+                        if (isBusy) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White)
+                        } else {
+                            Text("Send Verification Code", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                } else {
+                    Surface(
+                        color = ZulvazaOrange.copy(alpha = 0.08f),
+                        shape = RoundedCornerShape(14.dp),
+                        border = BorderStroke(1.dp, ZulvazaOrange.copy(alpha = 0.3f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "A 6-digit security verification code has been sent to your registered email ($otpEmail). Enter it below to complete your password update.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.padding(12.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(18.dp))
+
+                    OtpCodeBoxes(
+                        code = otpCode,
+                        onCodeChange = { otpCode = it },
+                        onComplete = { entered ->
+                            if (!isBusy) {
+                                onConfirmPasswordChange(newPassword, entered, otpMode, otpEmail) {
+                                    currentPassword = ""
+                                    newPassword = ""
+                                    confirmPassword = ""
+                                    otpCode = ""
+                                    otpSent = false
+                                }
+                            }
+                        },
+                        enabled = !isBusy
+                    )
+
+                    Spacer(modifier = Modifier.height(18.dp))
+
+                    Button(
+                        onClick = {
+                            onConfirmPasswordChange(newPassword, otpCode, otpMode, otpEmail) {
+                                currentPassword = ""
+                                newPassword = ""
+                                confirmPassword = ""
+                                otpCode = ""
+                                otpSent = false
+                            }
+                        },
+                        enabled = otpCode.length == 6 && !isBusy,
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 52.dp)
+                            .testTag("confirm_password_otp_button")
+                    ) {
+                        if (isBusy) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White)
+                        } else {
+                            Text("Verify OTP & Update Password", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(label, style = MaterialTheme.typography.labelSmall, color = color, fontWeight = FontWeight.SemiBold)
-                        Text("${newPassword.length} chars", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                OutlinedTextField(
-                    value = confirmPassword,
-                    onValueChange = { confirmPassword = it },
-                    label = { Text("Confirm New Password") },
-                    visualTransformation = if (showConfirm) VisualTransformation.None else PasswordVisualTransformation(),
-                    trailingIcon = {
-                        IconButton(onClick = { showConfirm = !showConfirm }) {
-                            Icon(
-                                imageVector = if (showConfirm) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                contentDescription = if (showConfirm) "Hide password" else "Show password"
-                            )
+                        TextButton(
+                            onClick = {
+                                otpSent = false
+                                otpCode = ""
+                            },
+                            enabled = !isBusy
+                        ) {
+                            Text("Change Details")
                         }
-                    },
-                    singleLine = true,
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .bringIntoViewRequester(confirmPwRequester)
-                        .onFocusEvent { if (it.isFocused) scope.launch { delay(180); confirmPwRequester.bringIntoView() } }
-                        .testTag("confirm_password_input")
-                )
-
-                if (confirmPassword.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(6.dp))
-                    val matched = newPassword == confirmPassword
-                    Text(
-                        text = if (matched) "Passwords match" else "Passwords do not match",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (matched) SuccessGreen else ErrorRed,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(18.dp))
-
-                Button(
-                    onClick = {
-                        when {
-                            currentPassword.isBlank() -> onToast("Enter your current password", true)
-                            newPassword.length < 8 -> onToast("New password must be at least 8 characters", true)
-                            newPassword != confirmPassword -> onToast("New passwords do not match", true)
-                            currentPassword == newPassword -> onToast("New password must be different from current password", true)
-                            else -> onUpdatePassword(currentPassword, newPassword) {
-                                currentPassword = ""
-                                newPassword = ""
-                                confirmPassword = ""
-                            }
+                        TextButton(
+                            onClick = {
+                                onRequestPasswordOtp(currentPassword) { mode, email ->
+                                    otpMode = mode
+                                    otpEmail = email
+                                    resendSeconds = 60
+                                }
+                            },
+                            enabled = resendSeconds == 0 && !isBusy
+                        ) {
+                            Text(if (resendSeconds > 0) "Resend (${resendSeconds}s)" else "Resend Code")
                         }
-                    },
-                    enabled = !isBusy,
-                    shape = RoundedCornerShape(16.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .defaultMinSize(minHeight = 52.dp)
-                ) {
-                    if (isBusy) {
-                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White)
-                    } else {
-                        Text("Update Password", maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun PasswordRuleRow(label: String, met: Boolean) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(vertical = 2.dp)
+    ) {
+        Icon(
+            imageVector = if (met) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+            contentDescription = null,
+            tint = if (met) SuccessGreen else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
+            modifier = Modifier.size(14.dp)
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (met) SuccessGreen else MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 

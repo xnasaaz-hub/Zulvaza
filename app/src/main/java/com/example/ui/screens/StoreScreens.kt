@@ -83,6 +83,8 @@ import com.example.data.model.SellerStore
 import com.example.data.model.SocialPlatform
 import com.example.ui.components.SignedRemoteImage
 import com.example.ui.components.SocialBrandBadge
+import com.example.ui.components.StoreUsernameField
+import com.example.ui.components.StoreUsernameUiState
 import com.example.ui.components.copyToClipboard
 import com.example.ui.components.openExternalUrl
 import com.example.ui.theme.JetBrainsMonoFontFamily
@@ -110,7 +112,7 @@ fun StoreProfileScreen(
     val totalSales = products.sumOf { it.sales }
     val slugHandle = store?.slug?.takeIf { it.isNotBlank() }
     val storefrontUrl = if (slugHandle != null) {
-        "https://zulvaza.com/store/$slugHandle"
+        "https://zulvaza.com/shop/$slugHandle"
     } else {
         "https://zulvaza.com"
     }
@@ -520,7 +522,7 @@ fun StoreProfileScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "zulvaza.com/@$slugHandle",
+                            text = "zulvaza.com/shop/$slugHandle",
                             style = MaterialTheme.typography.labelMedium,
                             color = ZulvazaOrange,
                             fontWeight = FontWeight.SemiBold
@@ -631,6 +633,8 @@ private fun StoreStatColumn(value: String, label: String) {
 fun EditStoreSheetContent(
     initialStore: SellerStore?,
     isBusy: Boolean,
+    usernameConflictNonce: Int = 0,
+    onCheckStoreUsername: suspend (String) -> String,
     onSaveStore: (SellerStore, () -> Unit) -> Unit,
     onToast: (String, Boolean) -> Unit,
     onDismiss: () -> Unit
@@ -639,6 +643,8 @@ fun EditStoreSheetContent(
 
     var shopName by remember(initialStore) { mutableStateOf(initialStore?.shopName ?: "") }
     var slug by remember(initialStore) { mutableStateOf(initialStore?.slug ?: "") }
+    var usernameManuallyEdited by remember(initialStore) { mutableStateOf(!initialStore?.slug.isNullOrBlank()) }
+    var usernameUiState by remember { mutableStateOf(StoreUsernameUiState()) }
     var bio by remember(initialStore) { mutableStateOf(initialStore?.bio ?: "") }
     var introduction by remember(initialStore) { mutableStateOf(initialStore?.introduction ?: "") }
 
@@ -689,7 +695,9 @@ fun EditStoreSheetContent(
                     value = shopName,
                     onValueChange = {
                         shopName = it
-                        if (slug.isBlank()) slug = Formatters.slugify(it)
+                        if (!usernameManuallyEdited) {
+                            slug = Formatters.generateStoreUsernameFromName(it)
+                        }
                     },
                     label = { Text("Store Name") },
                     singleLine = true,
@@ -701,18 +709,18 @@ fun EditStoreSheetContent(
                         .testTag("store_name_input")
                 )
                 Spacer(modifier = Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = slug,
-                    onValueChange = { slug = it.lowercase().filter { c -> c.isLetterOrDigit() || c == '-' || c == '_' } },
-                    label = { Text("Store @handle (slug)") },
-                    prefix = { Text("@") },
-                    singleLine = true,
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
+                StoreUsernameField(
+                    username = slug,
+                    storeName = shopName,
+                    recheckTrigger = usernameConflictNonce,
+                    onUsernameChange = { slug = it },
+                    onUserEdited = { usernameManuallyEdited = true },
+                    onCheckUsername = onCheckStoreUsername,
+                    onStateChange = { usernameUiState = it },
+                    fieldModifier = Modifier
                         .bringIntoViewRequester(slugRequester)
-                        .onFocusEvent { if (it.isFocused) scope.launch { delay(180); slugRequester.bringIntoView() } }
-                        .testTag("store_slug_input")
+                        .onFocusEvent { if (it.isFocused) scope.launch { delay(180); slugRequester.bringIntoView() } },
+                    testTag = "store_slug_input"
                 )
                 Spacer(modifier = Modifier.height(12.dp))
                 OutlinedTextField(
@@ -746,7 +754,7 @@ fun EditStoreSheetContent(
             onClick = {
                 when {
                     shopName.isBlank() -> onToast("Enter your store name", true)
-                    slug.isBlank() -> onToast("Enter a store @handle", true)
+                    !usernameUiState.canProceed -> onToast("Choose an available store username", true)
                     else -> {
                         onSaveStore(
                             SellerStore(
@@ -764,7 +772,7 @@ fun EditStoreSheetContent(
                     }
                 }
             },
-            enabled = !isBusy,
+            enabled = shopName.isNotBlank() && usernameUiState.canProceed && !usernameUiState.isChecking && !isBusy,
             shape = RoundedCornerShape(16.dp),
             modifier = Modifier
                 .fillMaxWidth()

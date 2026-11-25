@@ -130,6 +130,7 @@ fun SignUpScreen(
     val emailValid = Patterns.EMAIL_ADDRESS.matcher(email.trim()).matches()
     val passwordValid = password.length >= 8
     val hasLetterAndNumber = password.any { it.isDigit() } && password.any { it.isLetter() }
+    val hasSymbol = password.any { !it.isLetterOrDigit() }
     val passwordsMatch = confirmPassword.isNotEmpty() && password == confirmPassword
     val canSubmit = emailValid && passwordValid && passwordsMatch && !isBusy
 
@@ -154,20 +155,9 @@ fun SignUpScreen(
                 }
             }
 
-            // Centered Auth Brand Logo
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Image(
-                    painter = painterResource(id = R.drawable.img_auth_logo),
-                    contentDescription = "ZULVAZA Seller Center",
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.size(92.dp)
-                )
-            }
+            AuthBrandHeader()
 
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(18.dp))
 
             if (otpPendingEmail == null) {
                 Text("Create Seller Account", style = MaterialTheme.typography.headlineMedium)
@@ -250,6 +240,7 @@ fun SignUpScreen(
                             Spacer(modifier = Modifier.height(8.dp))
                             PasswordChecklistRow(label = "Minimum 8 characters", met = passwordValid)
                             PasswordChecklistRow(label = "Letters & numbers recommended", met = hasLetterAndNumber)
+                            PasswordChecklistRow(label = "Special symbol (!@#$%^&*)", met = hasSymbol)
                         }
 
                         Spacer(modifier = Modifier.height(12.dp))
@@ -437,20 +428,9 @@ fun LoginScreen(
                 Spacer(modifier = Modifier.height(16.dp))
             }
 
-            // Centered Brand Logo above auth fields
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Image(
-                    painter = painterResource(id = R.drawable.img_auth_logo),
-                    contentDescription = "ZULVAZA Seller Center",
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.size(96.dp)
-                )
-            }
+            AuthBrandHeader()
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(18.dp))
 
             when {
                 requiresMfa -> {
@@ -554,6 +534,9 @@ fun LoginScreen(
                                 enabled = !isBusy
                             )
                             Spacer(modifier = Modifier.height(16.dp))
+                            val recStrength = remember(recoveryNewPassword) {
+                                Formatters.evaluatePasswordStrength(recoveryNewPassword)
+                            }
                             OutlinedTextField(
                                 value = recoveryNewPassword,
                                 onValueChange = { recoveryNewPassword = it },
@@ -572,6 +555,28 @@ fun LoginScreen(
                                 shape = RoundedCornerShape(14.dp),
                                 modifier = Modifier.fillMaxWidth()
                             )
+                            if (recoveryNewPassword.isNotEmpty()) {
+                                Spacer(modifier = Modifier.height(10.dp))
+                                PasswordStrengthMeter(
+                                    strength = recStrength,
+                                    lengthOk = recoveryNewPassword.length >= 8
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Column(modifier = Modifier.fillMaxWidth()) {
+                                    PasswordChecklistRow(
+                                        label = "Minimum 8 characters",
+                                        met = recoveryNewPassword.length >= 8
+                                    )
+                                    PasswordChecklistRow(
+                                        label = "Letters & numbers recommended",
+                                        met = recoveryNewPassword.any { it.isDigit() } && recoveryNewPassword.any { it.isLetter() }
+                                    )
+                                    PasswordChecklistRow(
+                                        label = "Special symbol (!@#$%^&*)",
+                                        met = recoveryNewPassword.any { !it.isLetterOrDigit() }
+                                    )
+                                }
+                            }
                             Spacer(modifier = Modifier.height(18.dp))
                             Button(
                                 onClick = {
@@ -978,6 +983,45 @@ private fun PasswordStrengthMeter(
                 text = if (lengthOk) "8+ chars ✓" else "Min 8 chars",
                 style = MaterialTheme.typography.labelSmall,
                 color = if (lengthOk) SuccessGreen else ErrorRed
+            )
+        }
+    }
+}
+
+@Composable
+private fun AuthBrandHeader() {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = Color.White,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+            shadowElevation = 3.dp,
+            modifier = Modifier.size(88.dp)
+        ) {
+            Image(
+                painter = painterResource(id = R.drawable.img_auth_logo),
+                contentDescription = "ZULVAZA Seller Center",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(10.dp)
+            )
+        }
+        Spacer(modifier = Modifier.height(12.dp))
+        Surface(
+            color = ZulvazaOrange.copy(alpha = 0.12f),
+            shape = RoundedCornerShape(50),
+            border = BorderStroke(1.dp, ZulvazaOrange.copy(alpha = 0.28f))
+        ) {
+            Text(
+                text = "ZULVAZA SELLER CENTER",
+                style = MaterialTheme.typography.labelSmall,
+                color = ZulvazaOrange,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
             )
         }
     }

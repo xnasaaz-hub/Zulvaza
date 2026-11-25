@@ -33,8 +33,14 @@ import java.util.concurrent.TimeUnit
 
 class SupabaseException(
     message: String,
-    val statusCode: Int = 0
+    val statusCode: Int = 0,
+    val pgCode: String? = null
 ) : Exception(message)
+
+enum class PasswordChangeOtpMode {
+    REAUTHENTICATE_NONCE,
+    EMAIL_OTP
+}
 
 class SupabaseClient {
 
@@ -53,17 +59,22 @@ class SupabaseClient {
         return builder
     }
 
-    private fun parseErrorMessage(body: String, fallback: String): String {
-        if (body.isBlank()) return fallback
+    private fun parseErrorDetails(body: String, fallback: String): Pair<String, String?> {
+        if (body.isBlank()) return fallback to null
         return try {
             val json = JSONObject(body)
-            listOf("msg", "error_description", "message", "error", "hint")
+            val msg = listOf("msg", "error_description", "message", "error", "hint")
                 .firstNotNullOfOrNull { key -> json.optString(key).takeIf { it.isNotBlank() && it != "null" } }
                 ?: fallback
+            val pgCode = json.optString("code").takeIf { it.isNotBlank() && it != "null" }
+            msg to pgCode
         } catch (_: Exception) {
-            fallback
+            fallback to null
         }
     }
+
+    private fun parseErrorMessage(body: String, fallback: String): String =
+        parseErrorDetails(body, fallback).first
 
     private suspend fun executeRaw(request: Request): Pair<Int, String> = withContext(Dispatchers.IO) {
         try {
@@ -97,9 +108,11 @@ class SupabaseClient {
         }
         val (code, text) = executeRaw(builder.build())
         if (code !in 200..299) {
+            val (msg, pgCode) = parseErrorDetails(text, "Request failed ($code)")
             throw SupabaseException(
-                parseErrorMessage(text, "Request failed ($code)"),
-                statusCode = code
+                message = msg,
+                statusCode = code,
+                pgCode = pgCode
             )
         }
         return text
@@ -330,14 +343,37 @@ class SupabaseClient {
         )
     }
 
-    suspend fun updatePassword(session: UserSession, newPassword: String) {
-        val payload = JSONObject().apply { put("password", newPassword) }
+    suspend fun updatePassword(
+        session: UserSession,
+        newPassword: String,
+        reauthNonce: String? = null
+    ) {
+        val payload = JSONObject().apply {
+            put("password", newPassword)
+            if (!reauthNonce.isNullOrBlank()) {
+                put("nonce", reauthNonce.trim())
+            }
+        }
         executeJson(
             method = "PUT",
             url = "${SupabaseConfig.SUPABASE_URL}/auth/v1/user",
             bodyJson = payload.toString(),
             accessToken = session.accessToken
         )
+    }
+
+    suspend fun sendReauthenticateNonce(session: UserSession): PasswordChangeOtpMode {
+        val req = baseHeaders(session.accessToken)
+            .url("${SupabaseConfig.SUPABASE_URL}/auth/v1/reauthenticate")
+            .get()
+            .build()
+        val (code, _) = executeRaw(req)
+        if (code in 200..299) {
+            return PasswordChangeOtpMode.REAUTHENTICATE_NONCE
+        }
+        // Fallback when GoTrue reauthenticate endpoint isn't enabled on project
+        sendEmailLoginOtp(session.email)
+        return PasswordChangeOtpMode.EMAIL_OTP
     }
 
     suspend fun signOut(session: UserSession) {
@@ -750,6 +786,19 @@ class SupabaseClient {
             bannerPath = obj.optString("banner_path").takeIf { it.isNotBlank() && it != "null" },
             socialProfiles = socials
         )
+    }
+
+    suspend fun checkStoreUsername(session: UserSession, username: String): String {
+        val payload = JSONObject().apply {
+            put("_username", username.trim().lowercase())
+        }
+        val resp = executeJson(
+            method = "POST",
+            url = "${SupabaseConfig.SUPABASE_URL}/rest/v1/rpc/check_store_username",
+            bodyJson = payload.toString(),
+            accessToken = session.accessToken
+        )
+        return resp.trim().trim('"').lowercase()
     }
 
     suspend fun saveSellerStore(session: UserSession, store: SellerStore) {

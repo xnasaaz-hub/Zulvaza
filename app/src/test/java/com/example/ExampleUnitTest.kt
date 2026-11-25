@@ -110,4 +110,34 @@ class ExampleUnitTest {
         assertEquals("3001234567", Formatters.stripPakistanPrefix("03001234567"))
         assertTrue(Formatters.isValidPakistanE164("+92" + Formatters.stripPakistanPrefix("03001234567")))
     }
+
+    @Test
+    fun storeUsername_validationReservedWordsAndSuggestions_workCorrectly() {
+        assertTrue(Formatters.isValidStoreUsernameFormat("ahmed-tech"))
+        assertTrue(Formatters.isValidStoreUsernameFormat("shop123"))
+        assertFalse(Formatters.isValidStoreUsernameFormat("ab"))
+        assertFalse(Formatters.isValidStoreUsernameFormat("-ahmed"))
+        assertFalse(Formatters.isValidStoreUsernameFormat("ahmed-"))
+        assertFalse(Formatters.isValidStoreUsernameFormat("ahmed--pk"))
+        assertFalse(Formatters.isValidStoreUsernameFormat("Ahmed_PK"))
+
+        assertTrue(Formatters.isReservedStoreUsername("admin"))
+        assertTrue(Formatters.isReservedStoreUsername("zulvaza"))
+        assertTrue(Formatters.isReservedStoreUsername("SELLER-CENTER"))
+        assertFalse(Formatters.isReservedStoreUsername("ahmed-electronics"))
+
+        assertEquals("genzs-electrical-pk", Formatters.generateStoreUsernameFromName("Genzs Electrical PK!"))
+
+        val suggestions = Formatters.buildUsernameSuggestions("My Very Long Store Name Here", "my-very-long-store-name-here")
+        assertTrue(suggestions.isNotEmpty())
+        assertTrue(suggestions.all { it.length in 3..30 && Formatters.isValidStoreUsernameFormat(it) && !Formatters.isReservedStoreUsername(it) })
+    }
+
+    @Test
+    fun passwordStrength_scoresSymbolCharacters() {
+        val medium = Formatters.evaluatePasswordStrength("Test1234")
+        val strong = Formatters.evaluatePasswordStrength("Test1234!")
+        assertEquals(com.example.data.model.PasswordStrength.MEDIUM, medium)
+        assertEquals(com.example.data.model.PasswordStrength.STRONG, strong)
+    }
 }

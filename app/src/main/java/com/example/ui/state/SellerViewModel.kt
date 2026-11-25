@@ -23,6 +23,7 @@ import com.example.data.model.VerificationEvent
 import com.example.data.model.VerificationStatus
 import com.example.data.remote.AppUpdateStatus
 import com.example.data.remote.GitHubUpdateManager
+import com.example.data.remote.PasswordChangeOtpMode
 import com.example.data.remote.SupabaseClient
 import com.example.data.remote.SupabaseConfig
 import com.example.data.remote.SupabaseException
@@ -97,7 +98,8 @@ data class SellerUiState(
     val githubRepo: String = SupabaseConfig.DEFAULT_GITHUB_REPO,
     val appUpdateStatus: AppUpdateStatus = AppUpdateStatus.Idle,
     val notifications: List<SellerNotificationItem> = emptyList(),
-    val permissionsPromptCompleted: Boolean = true
+    val permissionsPromptCompleted: Boolean = true,
+    val usernameConflictNonce: Int = 0
 ) {
     val unreadNotificationCount: Int
         get() = notifications.count { !it.isRead }
@@ -151,6 +153,21 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             sessionStore.setPermissionsPromptDone()
             _uiState.update { it.copy(permissionsPromptCompleted = true) }
+        }
+    }
+
+    fun onNotificationPermissionGranted() {
+        viewModelScope.launch {
+            NotificationHelper.ensureChannel(getApplication())
+            val unread = _uiState.value.notifications.firstOrNull { !it.isRead }
+            if (unread != null) {
+                NotificationHelper.postLocalNotification(
+                    context = getApplication(),
+                    notificationId = unread.id.hashCode(),
+                    title = unread.title,
+                    body = unread.message
+                )
+            }
         }
     }
 
@@ -811,6 +828,16 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
         val ok = verifySellerRoleOrSignOut(session)
         if (ok) {
             loadSellerWorkspace(session)
+            val deviceName = listOf(Build.MANUFACTURER, Build.MODEL)
+                .filter { it.isNotBlank() }
+                .joinToString(" ")
+                .ifBlank { "Android Device" }
+            pushNotification(
+                title = "Seller Account Signed In",
+                message = "Signed in on $deviceName. Review active sessions anytime in Security.",
+                type = NotificationType.DEVICE_LOGIN,
+                targetRoute = "devices"
+            )
         }
     }
 
@@ -978,8 +1005,12 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
     private suspend fun evaluateVerificationStatusNotification(verification: SellerVerification) {
         val prevRaw = sessionStore.getLastKnownVerificationStatus()
         val currRaw = verification.status.raw
+        if (prevRaw == currRaw) return
+        if (prevRaw == null && verification.status == VerificationStatus.UNSUBMITTED) {
+            sessionStore.setLastKnownVerificationStatus(currRaw)
+            return
+        }
         sessionStore.setLastKnownVerificationStatus(currRaw)
-        if (prevRaw == null || prevRaw == currRaw) return
         when (verification.status) {
             VerificationStatus.PENDING -> pushNotification(
                 title = "Verification Under Review",
@@ -1121,14 +1152,19 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
 
     // ==================== SECURITY (PASSWORD & TOTP) ====================
 
-    fun updatePassword(currentPassword: String, newPassword: String, onSuccess: () -> Unit) {
+    fun requestPasswordChangeOtp(
+        currentPassword: String,
+        onOtpSent: (PasswordChangeOtpMode, String) -> Unit
+    ) {
         viewModelScope.launch {
             _uiState.update { it.copy(isBusy = true) }
             try {
-                val currentSession = _uiState.value.session ?: throw IllegalStateException("Not logged in")
-                val email = currentSession.email
+                require(currentPassword.isNotEmpty()) { "Enter your current password" }
+                val activeSession = withValidSession { it }
+                val email = activeSession.email.trim()
                 require(email.isNotBlank()) { "Account email unavailable" }
-                // Verify current password before permitting update
+
+                // Verify current password against Supabase without overwriting an elevated AAL2 session
                 val verifiedLogin = try {
                     supabase.signInWithPassword(email, currentPassword)
                 } catch (e: SupabaseException) {
@@ -1137,15 +1173,76 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
                         else e.message ?: "Unable to verify current password"
                     )
                 }
-                sessionStore.saveSession(verifiedLogin.session)
-                _uiState.update { it.copy(session = verifiedLogin.session) }
-                supabase.updatePassword(verifiedLogin.session, newPassword)
+
+                val currentAal = supabase.decodeJwtAal(activeSession.accessToken)
+                val sessionForOtp = if (currentAal == "aal2") {
+                    activeSession
+                } else {
+                    sessionStore.saveSession(verifiedLogin.session)
+                    _uiState.update { it.copy(session = verifiedLogin.session) }
+                    verifiedLogin.session
+                }
+
+                val otpMode = supabase.sendReauthenticateNonce(sessionForOtp)
                 _uiState.update { it.copy(isBusy = false) }
-                showToast("Password updated")
+                showToast("6-digit verification code sent to $email")
+                onOtpSent(otpMode, email)
+            } catch (e: Exception) {
+                _uiState.update { it.copy(isBusy = false) }
+                showToast(e.message ?: "Failed to verify current password", isError = true)
+            }
+        }
+    }
+
+    fun confirmPasswordChangeWithOtp(
+        newPassword: String,
+        otpCode: String,
+        mode: PasswordChangeOtpMode,
+        email: String,
+        onSuccess: () -> Unit
+    ) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true) }
+            try {
+                val cleanOtp = otpCode.filter { it.isDigit() }
+                require(cleanOtp.length == 6) { "Enter the 6-digit verification code" }
+                require(newPassword.length >= 8) { "New password must be at least 8 characters" }
+
+                when (mode) {
+                    PasswordChangeOtpMode.REAUTHENTICATE_NONCE -> {
+                        withValidSession { session ->
+                            supabase.updatePassword(session, newPassword, reauthNonce = cleanOtp)
+                        }
+                    }
+                    PasswordChangeOtpMode.EMAIL_OTP -> {
+                        val verified = supabase.verifyEmailLoginOtp(email, cleanOtp)
+                        val activeAal = _uiState.value.session?.let { supabase.decodeJwtAal(it.accessToken) }
+                        if (!verified.requiresMfa) {
+                            supabase.updatePassword(verified.session, newPassword)
+                            sessionStore.saveSession(verified.session)
+                            _uiState.update { it.copy(session = verified.session) }
+                        } else if (activeAal == "aal2") {
+                            withValidSession { session ->
+                                supabase.updatePassword(session, newPassword)
+                            }
+                        } else {
+                            throw IllegalStateException("Please complete 2FA verification to update password")
+                        }
+                    }
+                }
+
+                _uiState.update { it.copy(isBusy = false) }
+                pushNotification(
+                    title = "Password Updated",
+                    message = "Your ZULVAZA Seller password was changed after OTP verification.",
+                    type = NotificationType.GENERAL,
+                    targetRoute = "devices"
+                )
+                showToast("Password updated successfully")
                 onSuccess()
             } catch (e: Exception) {
                 _uiState.update { it.copy(isBusy = false) }
-                showToast(e.message ?: "Failed to update password", isError = true)
+                showToast(e.message ?: "Failed to verify OTP or update password", isError = true)
             }
         }
     }
@@ -1308,6 +1405,21 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    private fun isDuplicateKeyError(e: Throwable): Boolean {
+        if (e is SupabaseException && e.pgCode == "23505") return true
+        val msg = e.message.orEmpty()
+        return msg.contains("23505") ||
+            msg.contains("duplicate key", ignoreCase = true) ||
+            msg.contains("already taken", ignoreCase = true) ||
+            msg.contains("seller_stores_slug", ignoreCase = true)
+    }
+
+    suspend fun checkStoreUsername(username: String): String {
+        return withValidSession { session ->
+            supabase.checkStoreUsername(session, username)
+        }
+    }
+
     fun submitVerification(details: SellerIdentityDetails, storeSetup: SellerStore? = null) {
         viewModelScope.launch {
             _uiState.update { it.copy(isBusy = true) }
@@ -1315,12 +1427,14 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
                 withValidSession { session ->
                     supabase.submitSellerIdentity(session, details)
                     if (storeSetup != null && storeSetup.shopName.isNotBlank()) {
-                        val slugClean = storeSetup.slug.ifBlank { Formatters.slugify(storeSetup.shopName) }
+                        val slugClean = storeSetup.slug.trim().lowercase().ifBlank {
+                            Formatters.generateStoreUsernameFromName(storeSetup.shopName).ifBlank { "seller-store" }
+                        }
                         val storeToSave = storeSetup.copy(
                             sellerId = session.userId,
                             slug = slugClean
                         )
-                        runCatching { supabase.saveSellerStore(session, storeToSave) }
+                        supabase.saveSellerStore(session, storeToSave)
                     }
                     val refreshed = supabase.fetchVerification(session)
                     val refreshedStore = runCatching { supabase.fetchStore(session) }.getOrNull() ?: storeSetup ?: _uiState.value.store
@@ -1341,8 +1455,18 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
                 }
                 showToast("Verification submitted! Status is now Under Review.")
             } catch (e: Exception) {
-                _uiState.update { it.copy(isBusy = false) }
-                showToast(e.message ?: "Verification submission failed", isError = true)
+                if (isDuplicateKeyError(e)) {
+                    _uiState.update {
+                        it.copy(
+                            isBusy = false,
+                            usernameConflictNonce = it.usernameConflictNonce + 1
+                        )
+                    }
+                    showToast("This store username is already taken. Choose another username.", isError = true)
+                } else {
+                    _uiState.update { it.copy(isBusy = false) }
+                    showToast(e.message ?: "Verification submission failed", isError = true)
+                }
             }
         }
     }
@@ -1414,7 +1538,7 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
         val baseStore = currentStore ?: SellerStore(
             sellerId = sessionUserId,
             shopName = fallbackName,
-            slug = Formatters.slugify(fallbackName)
+            slug = Formatters.generateStoreUsernameFromName(fallbackName).ifBlank { "seller-store" }
         )
         val updated = if (isLogo) {
             baseStore.copy(logoPath = uploadedPath)
@@ -1495,8 +1619,18 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
                 showToast("Store profile saved")
                 onSuccess()
             } catch (e: Exception) {
-                _uiState.update { it.copy(isBusy = false) }
-                showToast(e.message ?: "Failed to save store", isError = true)
+                if (isDuplicateKeyError(e)) {
+                    _uiState.update {
+                        it.copy(
+                            isBusy = false,
+                            usernameConflictNonce = it.usernameConflictNonce + 1
+                        )
+                    }
+                    showToast("This store username is already taken. Choose another username.", isError = true)
+                } else {
+                    _uiState.update { it.copy(isBusy = false) }
+                    showToast(e.message ?: "Failed to save store", isError = true)
+                }
             }
         }
     }

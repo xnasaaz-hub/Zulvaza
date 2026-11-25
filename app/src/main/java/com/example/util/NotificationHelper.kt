@@ -29,6 +29,8 @@ object NotificationHelper {
                     NotificationManager.IMPORTANCE_HIGH
                 ).apply {
                     description = CHANNEL_DESC
+                    enableLights(true)
+                    enableVibration(true)
                 }
                 manager.createNotificationChannel(channel)
             }
@@ -77,6 +79,8 @@ object NotificationHelper {
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
 

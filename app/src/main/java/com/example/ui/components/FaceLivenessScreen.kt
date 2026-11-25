@@ -19,6 +19,12 @@ import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -34,6 +40,7 @@ import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
@@ -41,7 +48,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
@@ -69,6 +81,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -76,6 +89,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.ClipOp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
@@ -85,6 +99,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -488,7 +503,16 @@ fun FaceLivenessScreen(
                                             }
                                         } else {
                                             stableHits = 0
-                                            liveHint = step?.instruction ?: "Hold steady"
+                                            liveHint = when {
+                                                step == FaceLivenessStep.RIGHT &&
+                                                    ((leftTurnYawSign > 0f && yaw > 10f) || (leftTurnYawSign < 0f && yaw < -10f)) ->
+                                                    "Wrong way — follow the → arrow"
+                                                step == FaceLivenessStep.UP && pitch < -8f ->
+                                                    "Wrong way — tilt UP toward the ↑ arrow"
+                                                step == FaceLivenessStep.DOWN && pitch > 8f ->
+                                                    "Wrong way — tilt DOWN toward the ↓ arrow"
+                                                else -> step?.instruction ?: "Hold steady"
+                                            }
                                         }
                                     }
                                     .addOnCompleteListener {
@@ -522,132 +546,259 @@ fun FaceLivenessScreen(
             modifier = Modifier.fillMaxSize()
         )
 
-        // Translucent Mask + Center Oval Guide (Green when aligned, White/Orange when adjusting)
-        val guideColor = if (faceInFrame) SuccessGreen else Color.White
+        // Animated directional pulse & glow for arrow HUD
+        val arrowInfinite = rememberInfiniteTransition(label = "livenessArrowPulse")
+        val arrowShiftFraction by arrowInfinite.animateFloat(
+            initialValue = -1f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 760, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "arrowShift"
+        )
+        val arrowAlpha by arrowInfinite.animateFloat(
+            initialValue = 0.65f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 760, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "arrowAlpha"
+        )
+
+        // Translucent Mask + Center Oval Guide + Directional Target Arc
+        val guideColor = if (faceInFrame) SuccessGreen else ZulvazaOrange
         Canvas(modifier = Modifier.fillMaxSize()) {
-            val ovalW = size.width * 0.72f
+            val ovalW = size.width * 0.70f
             val ovalH = ovalW * 1.32f
             val left = (size.width - ovalW) / 2f
-            val top = (size.height - ovalH) / 2f - 28.dp.toPx()
+            val top = (size.height - ovalH) / 2f - 18.dp.toPx()
             val ovalRect = Rect(left, top, left + ovalW, top + ovalH)
             val ovalPath = Path().apply { addOval(ovalRect) }
 
             clipPath(ovalPath, clipOp = ClipOp.Difference) {
-                drawRect(Color.Black.copy(alpha = 0.72f))
+                drawRect(Color(0xFF060B14).copy(alpha = 0.80f))
             }
 
+            // Base oval guide
             drawOval(
-                color = guideColor,
+                color = guideColor.copy(alpha = 0.45f),
                 topLeft = Offset(left, top),
                 size = Size(ovalW, ovalH),
-                style = Stroke(width = 4.dp.toPx())
+                style = Stroke(width = 3.dp.toPx())
             )
+
+            // Directional glowing arc cue on the active movement side
+            val arcPad = 8.dp.toPx()
+            val arcTopLeft = Offset(left - arcPad, top - arcPad)
+            val arcSize = Size(ovalW + arcPad * 2f, ovalH + arcPad * 2f)
+            val activeAccent = if (faceInFrame) ZulvazaOrange else Color.White.copy(alpha = 0.75f)
+            when (currentStep) {
+                FaceLivenessStep.STRAIGHT -> {
+                    drawOval(
+                        color = if (faceInFrame) SuccessGreen else Color.White.copy(alpha = 0.85f),
+                        topLeft = Offset(left, top),
+                        size = Size(ovalW, ovalH),
+                        style = Stroke(width = 4.5.dp.toPx())
+                    )
+                }
+                FaceLivenessStep.LEFT -> {
+                    drawArc(
+                        color = activeAccent.copy(alpha = arrowAlpha),
+                        startAngle = 140f,
+                        sweepAngle = 80f,
+                        useCenter = false,
+                        topLeft = arcTopLeft,
+                        size = arcSize,
+                        style = Stroke(width = 6.dp.toPx(), cap = StrokeCap.Round)
+                    )
+                }
+                FaceLivenessStep.RIGHT -> {
+                    drawArc(
+                        color = activeAccent.copy(alpha = arrowAlpha),
+                        startAngle = -40f,
+                        sweepAngle = 80f,
+                        useCenter = false,
+                        topLeft = arcTopLeft,
+                        size = arcSize,
+                        style = Stroke(width = 6.dp.toPx(), cap = StrokeCap.Round)
+                    )
+                }
+                FaceLivenessStep.UP -> {
+                    drawArc(
+                        color = activeAccent.copy(alpha = arrowAlpha),
+                        startAngle = 230f,
+                        sweepAngle = 80f,
+                        useCenter = false,
+                        topLeft = arcTopLeft,
+                        size = arcSize,
+                        style = Stroke(width = 6.dp.toPx(), cap = StrokeCap.Round)
+                    )
+                }
+                FaceLivenessStep.DOWN -> {
+                    drawArc(
+                        color = activeAccent.copy(alpha = arrowAlpha),
+                        startAngle = 50f,
+                        sweepAngle = 80f,
+                        useCenter = false,
+                        topLeft = arcTopLeft,
+                        size = arcSize,
+                        style = Stroke(width = 6.dp.toPx(), cap = StrokeCap.Round)
+                    )
+                }
+                null -> Unit
+            }
         }
 
-        // Top Bar: Close + 5 Step Checkmarks + Audio Cue Toggle
-        Column(
+        // Clean Top Bar: Close + Step Counter Pill + Voice Cue Toggle (No 5-word pill strip)
+        Row(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .fillMaxWidth()
-                .padding(14.dp)
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            IconButton(
+                onClick = onClose,
+                modifier = Modifier
+                    .size(48.dp)
+                    .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                    .testTag("face_liveness_close")
             ) {
-                IconButton(
-                    onClick = onClose,
-                    modifier = Modifier
-                        .size(48.dp)
-                        .background(Color.Black.copy(alpha = 0.55f), CircleShape)
-                ) {
-                    Icon(Icons.Default.Close, contentDescription = "Close face verification", tint = Color.White)
-                }
+                Icon(Icons.Default.Close, contentDescription = "Close face verification", tint = Color.White)
+            }
 
-                Surface(
-                    color = Color.Black.copy(alpha = 0.65f),
-                    shape = RoundedCornerShape(50)
+            Surface(
+                color = Color(0xFF0F172A).copy(alpha = 0.82f),
+                shape = RoundedCornerShape(50),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f))
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(Icons.Default.Face, contentDescription = null, tint = ZulvazaOrange, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "Face Liveness (${currentStepIndex + 1}/5)",
-                            color = Color.White,
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                }
-
-                IconButton(
-                    onClick = { audioEnabled = !audioEnabled },
-                    modifier = Modifier
-                        .size(48.dp)
-                        .background(Color.Black.copy(alpha = 0.55f), CircleShape)
-                ) {
-                    Icon(
-                        imageVector = if (audioEnabled) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
-                        contentDescription = "Toggle voice guide",
-                        tint = if (audioEnabled) ZulvazaOrange else Color.White
+                    Icon(Icons.Default.Face, contentDescription = null, tint = ZulvazaOrange, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Step ${currentStepIndex + 1} of 5",
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // 5-Step Progress Strip with Checkmarks
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            IconButton(
+                onClick = { audioEnabled = !audioEnabled },
+                modifier = Modifier
+                    .size(48.dp)
+                    .background(Color.Black.copy(alpha = 0.55f), CircleShape)
             ) {
-                FaceLivenessStep.entries.forEachIndexed { idx, step ->
-                    val done = idx < currentStepIndex
-                    val active = idx == currentStepIndex
+                Icon(
+                    imageVector = if (audioEnabled) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
+                    contentDescription = "Toggle voice guide",
+                    tint = if (audioEnabled) ZulvazaOrange else Color.White
+                )
+            }
+        }
+
+        // Animated Directional Arrow Cue System
+        if (currentStep != null) {
+            val shiftPx = (arrowShiftFraction * 18f).roundToInt()
+            when (currentStep) {
+                FaceLivenessStep.STRAIGHT -> {
                     Surface(
-                        color = when {
-                            done -> SuccessGreen
-                            active -> ZulvazaOrange
-                            else -> Color.Black.copy(alpha = 0.58f)
-                        },
-                        shape = RoundedCornerShape(50),
-                        modifier = Modifier.weight(1f)
+                        color = Color(0xFF0F172A).copy(alpha = 0.78f),
+                        shape = CircleShape,
+                        border = BorderStroke(1.5.dp, if (faceInFrame) SuccessGreen else ZulvazaOrange),
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 82.dp)
+                            .alpha(arrowAlpha)
+                            .testTag("liveness_arrow_straight")
                     ) {
                         Row(
-                            modifier = Modifier.padding(vertical = 6.dp, horizontal = 4.dp),
-                            horizontalArrangement = Arrangement.Center,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            if (done) {
-                                Icon(Icons.Default.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(12.dp))
-                                Spacer(modifier = Modifier.width(2.dp))
-                            }
+                            Icon(
+                                imageVector = Icons.Default.CenterFocusStrong,
+                                contentDescription = "Look straight ahead",
+                                tint = if (faceInFrame) SuccessGreen else ZulvazaOrange,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = step.title,
+                                text = "LOOK STRAIGHT",
                                 color = Color.White,
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold
                             )
                         }
                     }
                 }
+                FaceLivenessStep.LEFT -> {
+                    LivenessDirectionalArrowBadge(
+                        icon = Icons.AutoMirrored.Filled.ArrowBack,
+                        label = "TURN LEFT",
+                        alpha = arrowAlpha,
+                        modifier = Modifier
+                            .align(Alignment.CenterStart)
+                            .padding(start = 12.dp)
+                            .offset { IntOffset(x = -shiftPx, y = -28) }
+                            .testTag("liveness_arrow_left")
+                    )
+                }
+                FaceLivenessStep.RIGHT -> {
+                    LivenessDirectionalArrowBadge(
+                        icon = Icons.AutoMirrored.Filled.ArrowForward,
+                        label = "TURN RIGHT",
+                        alpha = arrowAlpha,
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .padding(end = 12.dp)
+                            .offset { IntOffset(x = shiftPx, y = -28) }
+                            .testTag("liveness_arrow_right")
+                    )
+                }
+                FaceLivenessStep.UP -> {
+                    LivenessDirectionalArrowBadge(
+                        icon = Icons.Default.ArrowUpward,
+                        label = "LOOK UP",
+                        alpha = arrowAlpha,
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 82.dp)
+                            .offset { IntOffset(x = 0, y = -shiftPx) }
+                            .testTag("liveness_arrow_up")
+                    )
+                }
+                FaceLivenessStep.DOWN -> {
+                    LivenessDirectionalArrowBadge(
+                        icon = Icons.Default.ArrowDownward,
+                        label = "LOOK DOWN",
+                        alpha = arrowAlpha,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 166.dp)
+                            .offset { IntOffset(x = 0, y = shiftPx) }
+                            .testTag("liveness_arrow_down")
+                    )
+                }
             }
         }
 
-        // Bottom Live Prompt Card
+        // Bottom Live Prompt Card + Step Dots
         Surface(
-            color = Color(0xFF0F172A).copy(alpha = 0.90f),
-            shape = RoundedCornerShape(22.dp),
+            color = Color(0xFF0F172A).copy(alpha = 0.92f),
+            shape = RoundedCornerShape(24.dp),
+            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 22.dp)
+                .padding(horizontal = 20.dp, vertical = 20.dp)
         ) {
             Column(
                 modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
@@ -667,21 +818,75 @@ fun FaceLivenessScreen(
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = liveHint,
-                    color = if (faceInFrame) SuccessGreen else Color.White.copy(alpha = 0.75f),
+                    color = if (faceInFrame) SuccessGreen else Color.White.copy(alpha = 0.78f),
                     style = MaterialTheme.typography.labelLarge,
                     textAlign = TextAlign.Center
                 )
-                Spacer(modifier = Modifier.height(10.dp))
-                LinearProgressIndicator(
-                    progress = { (currentStepIndex.toFloat() / FaceLivenessStep.entries.size.toFloat()).coerceIn(0f, 1f) },
-                    color = SuccessGreen,
-                    trackColor = Color.White.copy(alpha = 0.2f),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(6.dp)
-                        .clip(CircleShape)
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    repeat(FaceLivenessStep.entries.size) { idx ->
+                        val activeColor = when {
+                            idx < currentStepIndex -> SuccessGreen
+                            idx == currentStepIndex -> ZulvazaOrange
+                            else -> Color.White.copy(alpha = 0.20f)
+                        }
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(6.dp)
+                                .clip(CircleShape)
+                                .background(activeColor)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LivenessDirectionalArrowBadge(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    alpha: Float,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = modifier.alpha(alpha)
+    ) {
+        Surface(
+            shape = CircleShape,
+            color = ZulvazaOrange,
+            border = BorderStroke(2.dp, Color.White),
+            shadowElevation = 8.dp,
+            modifier = Modifier.size(56.dp)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = label,
+                    tint = Color.White,
+                    modifier = Modifier.size(30.dp)
                 )
             }
+        }
+        Spacer(modifier = Modifier.height(6.dp))
+        Surface(
+            color = Color(0xFF0F172A).copy(alpha = 0.9f),
+            shape = RoundedCornerShape(50),
+            border = BorderStroke(1.dp, ZulvazaOrange.copy(alpha = 0.7f))
+        ) {
+            Text(
+                text = label,
+                color = Color.White,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+            )
         }
     }
 }

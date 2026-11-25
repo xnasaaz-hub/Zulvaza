@@ -44,14 +44,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddBox
-import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Inventory2
-import androidx.compose.material.icons.filled.LocationOn
-import androidx.compose.material.icons.filled.NotificationsActive
-import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Storefront
 import androidx.compose.material.icons.outlined.AddBox
 import androidx.compose.material.icons.outlined.Home
@@ -61,10 +57,6 @@ import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Storefront
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -77,10 +69,8 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.NavigationRailItemDefaults
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -92,13 +82,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -147,6 +135,35 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val state by viewModel.uiState.collectAsStateWithLifecycle()
+            val rootContext = LocalContext.current
+            val notificationPermLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.RequestPermission()
+            ) { granted ->
+                viewModel.markPermissionsPromptCompleted()
+                if (granted) {
+                    viewModel.onNotificationPermissionGranted()
+                }
+            }
+
+            LaunchedEffect(state.rootDestination, state.permissionsPromptCompleted) {
+                if (!state.permissionsPromptCompleted &&
+                    state.rootDestination != RootDestination.SPLASH
+                ) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        val alreadyGranted = ContextCompat.checkSelfPermission(
+                            rootContext,
+                            Manifest.permission.POST_NOTIFICATIONS
+                        ) == PackageManager.PERMISSION_GRANTED
+                        if (alreadyGranted) {
+                            viewModel.markPermissionsPromptCompleted()
+                        } else {
+                            notificationPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        }
+                    } else {
+                        viewModel.markPermissionsPromptCompleted()
+                    }
+                }
+            }
 
             LaunchedEffect(state.toast?.id) {
                 if (state.toast != null) {
@@ -168,14 +185,6 @@ class MainActivity : ComponentActivity() {
                                 state = state,
                                 viewModel = viewModel
                             )
-
-                            if (!state.permissionsPromptCompleted &&
-                                state.rootDestination != RootDestination.SPLASH
-                            ) {
-                                PermissionsOnboardingOverlay(
-                                    onComplete = viewModel::markPermissionsPromptCompleted
-                                )
-                            }
                         }
                     }
 
@@ -278,12 +287,14 @@ private fun ZulvazaRootContent(
                 canNavigateBack = state.openVerificationFromAccount &&
                     state.verification.status != VerificationStatus.UNSUBMITTED,
                 isBusy = state.isBusy,
+                usernameConflictNonce = state.usernameConflictNonce,
                 resolveDocUrl = viewModel::resolveVerificationDocUrl,
                 resolveFaceUrl = viewModel::resolveFacePhotoUrl,
                 resolveStoreMedia = viewModel::resolveStoreMediaUrl,
                 onUploadCnic = viewModel::uploadCnicCapture,
                 onUploadFacePhoto = viewModel::uploadFacePhoto,
                 onUploadStoreMediaBytes = viewModel::uploadStoreMediaBytes,
+                onCheckStoreUsername = viewModel::checkStoreUsername,
                 onSubmit = viewModel::submitVerification,
                 onToast = viewModel::showToast,
                 onBack = viewModel::closeVerificationEditorToMain,
@@ -339,6 +350,8 @@ private fun MainSellerShell(
             EditStoreSheetContent(
                 initialStore = state.store,
                 isBusy = state.isBusy,
+                usernameConflictNonce = state.usernameConflictNonce,
+                onCheckStoreUsername = viewModel::checkStoreUsername,
                 onSaveStore = { updated, onDone ->
                     viewModel.saveStore(updated) {
                         onDone()
@@ -416,7 +429,8 @@ private fun MainSellerShell(
                     showSettings = false
                     viewModel.openVerificationEditor()
                 },
-                onUpdatePassword = viewModel::updatePassword,
+                onRequestPasswordOtp = viewModel::requestPasswordChangeOtp,
+                onConfirmPasswordChange = viewModel::confirmPasswordChangeWithOtp,
                 onStartTotpEnroll = viewModel::startTotpEnrollment,
                 onConfirmTotpEnroll = viewModel::confirmTotpEnrollment,
                 onCancelTotpEnroll = viewModel::cancelTotpEnrollment,
@@ -816,197 +830,6 @@ private fun SellerTopAppBar(
     }
 }
 
-@Composable
-private fun PermissionsOnboardingOverlay(
-    onComplete: () -> Unit
-) {
-    val context = LocalContext.current
-    val requiredPermissions = remember {
-        buildList {
-            add(Manifest.permission.CAMERA)
-            add(Manifest.permission.ACCESS_FINE_LOCATION)
-            add(Manifest.permission.ACCESS_COARSE_LOCATION)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                add(Manifest.permission.POST_NOTIFICATIONS)
-            }
-        }
-    }
-
-    val allAlreadyGranted = remember(context) {
-        requiredPermissions.all { perm ->
-            ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
-        }
-    }
-
-    LaunchedEffect(allAlreadyGranted) {
-        if (allAlreadyGranted) {
-            onComplete()
-        }
-    }
-
-    if (allAlreadyGranted) return
-
-    val launcher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestMultiplePermissions()
-    ) { _ ->
-        onComplete()
-    }
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.56f))
-            .statusBarsPadding()
-            .navigationBarsPadding()
-            .padding(20.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Card(
-            shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("permissions_onboarding_card")
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-                    .padding(22.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Surface(
-                    shape = CircleShape,
-                    color = ZulvazaOrange.copy(alpha = 0.14f),
-                    modifier = Modifier.size(64.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Default.Security,
-                            contentDescription = null,
-                            tint = ZulvazaOrange,
-                            modifier = Modifier.size(32.dp)
-                        )
-                    }
-                }
-                Spacer(modifier = Modifier.height(14.dp))
-                Text(
-                    text = "Permissions Needed for Seller Tools",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.Center
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                    text = "Allow these permissions once so verification, security alerts, and updates work smoothly.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center
-                )
-
-                Spacer(modifier = Modifier.height(18.dp))
-
-                PermissionExplainRow(
-                    icon = Icons.Default.CameraAlt,
-                    title = "Camera",
-                    subtitle = "Scan your CNIC front and back automatically during seller verification."
-                )
-                Spacer(modifier = Modifier.height(10.dp))
-                PermissionExplainRow(
-                    icon = Icons.Default.LocationOn,
-                    title = "Location",
-                    subtitle = "Detect your city/region for login security and store address verification."
-                )
-                Spacer(modifier = Modifier.height(10.dp))
-                PermissionExplainRow(
-                    icon = Icons.Default.NotificationsActive,
-                    title = "Notifications",
-                    subtitle = "Receive instant alerts for new device logins, KYC approval, and app updates."
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
-                Text(
-                    text = "Product & store media use Android's built-in Photo Picker (no broad gallery permission required).",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center
-                )
-
-                Spacer(modifier = Modifier.height(20.dp))
-                Button(
-                    onClick = { launcher.launch(requiredPermissions.toTypedArray()) },
-                    colors = ButtonDefaults.buttonColors(containerColor = ZulvazaOrange),
-                    shape = RoundedCornerShape(14.dp),
-                    contentPadding = PaddingValues(vertical = 12.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .defaultMinSize(minHeight = 48.dp)
-                        .testTag("allow_permissions_button")
-                ) {
-                    Text(
-                        text = "Allow Permissions",
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-                Spacer(modifier = Modifier.height(6.dp))
-                TextButton(
-                    onClick = onComplete,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .defaultMinSize(minHeight = 44.dp)
-                        .testTag("skip_permissions_button")
-                ) {
-                    Text("Ask Later", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun PermissionExplainRow(
-    icon: ImageVector,
-    title: String,
-    subtitle: String
-) {
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-        shape = RoundedCornerShape(14.dp),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Row(
-            modifier = Modifier.padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = ZulvazaOrange.copy(alpha = 0.14f),
-                modifier = Modifier.size(38.dp)
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = null,
-                        tint = ZulvazaOrange,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-            }
-            Spacer(modifier = Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-    }
-}
 
 @Composable
 private fun SellerBottomNavBar(

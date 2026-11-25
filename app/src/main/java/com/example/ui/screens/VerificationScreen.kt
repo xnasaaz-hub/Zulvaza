@@ -105,6 +105,8 @@ import com.example.ui.components.FaceLivenessScreen
 import com.example.ui.components.ImageCropDialog
 import com.example.ui.components.LocationGpsSection
 import com.example.ui.components.SignedRemoteImage
+import com.example.ui.components.StoreUsernameField
+import com.example.ui.components.StoreUsernameUiState
 import com.example.ui.theme.ErrorRed
 import com.example.ui.theme.ErrorRedSoft
 import com.example.ui.theme.SuccessGreen
@@ -126,12 +128,14 @@ fun VerificationScreen(
     store: SellerStore?,
     canNavigateBack: Boolean,
     isBusy: Boolean,
+    usernameConflictNonce: Int = 0,
     resolveDocUrl: (String) -> String?,
     resolveFaceUrl: (String) -> String?,
     resolveStoreMedia: (String?) -> String?,
     onUploadCnic: suspend (ByteArray, String) -> String,
     onUploadFacePhoto: suspend (ByteArray) -> String,
     onUploadStoreMediaBytes: suspend (ByteArray, String, String, String?, (Float) -> Unit) -> String,
+    onCheckStoreUsername: suspend (String) -> String,
     onSubmit: (SellerIdentityDetails, SellerStore?) -> Unit,
     onToast: (String, Boolean) -> Unit,
     onBack: () -> Unit,
@@ -190,6 +194,8 @@ fun VerificationScreen(
     // Store setup (Step 5)
     var shopName by remember(store) { mutableStateOf(store?.shopName.orEmpty()) }
     var shopSlug by remember(store) { mutableStateOf(store?.slug.orEmpty()) }
+    var usernameManuallyEdited by remember(store) { mutableStateOf(!store?.slug.isNullOrBlank()) }
+    var usernameUiState by remember { mutableStateOf(StoreUsernameUiState()) }
     var shopBio by remember(store) { mutableStateOf(store?.bio.orEmpty()) }
     var shopIntro by remember(store) { mutableStateOf(store?.introduction.orEmpty()) }
     var shopLogoPath by remember(store) { mutableStateOf(store?.logoPath) }
@@ -577,22 +583,46 @@ fun VerificationScreen(
                         }
                     }
 
+                    val cnicReadyToContinue = cnicFrontPath.isNotBlank() &&
+                        cnicBackPath.isNotBlank() &&
+                        !isUploadingCnic
+
                     Spacer(modifier = Modifier.height(18.dp))
-                    Button(
-                        onClick = {
-                            when {
-                                isUploadingCnic -> onToast("Wait for CNIC upload to complete", true)
-                                cnicFrontPath.isBlank() || cnicBackPath.isBlank() -> onToast("Tap Scan CNIC Card to scan both Front & Back", true)
-                                else -> step = 2
-                            }
-                        },
-                        shape = RoundedCornerShape(16.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .defaultMinSize(minHeight = 52.dp)
-                            .testTag("step1_next_button")
-                    ) {
-                        Text("Continue to Face Verification", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (cnicReadyToContinue) {
+                        Button(
+                            onClick = { step = 2 },
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 52.dp)
+                                .testTag("step1_next_button")
+                        ) {
+                            Text(
+                                "Continue to Face Verification",
+                                style = MaterialTheme.typography.titleMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    } else {
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                            shape = RoundedCornerShape(14.dp),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = if (isUploadingCnic) {
+                                    "Uploading scanned CNIC images & running OCR check..."
+                                } else {
+                                    "Scan both Front & Back sides of your CNIC card to unlock Next."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)
+                            )
+                        }
                     }
                 }
 
@@ -728,32 +758,44 @@ fun VerificationScreen(
                         }
                     }
 
+                    val faceReadyToContinue = facePhotoPath.isNotBlank() && !isUploadingFace
+
                     Spacer(modifier = Modifier.height(18.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         OutlinedButton(
                             onClick = { step = 1 },
                             shape = RoundedCornerShape(16.dp),
                             modifier = Modifier
-                                .weight(0.35f)
+                                .weight(if (faceReadyToContinue) 0.35f else 1f)
                                 .defaultMinSize(minHeight = 52.dp)
                         ) { Text("Back", maxLines = 1) }
 
-                        Button(
-                            onClick = {
-                                when {
-                                    isUploadingFace -> onToast("Wait for face photo upload to finish", true)
-                                    facePhotoPath.isBlank() -> onToast("Complete live face verification first", true)
-                                    else -> step = 3
-                                }
-                            },
-                            shape = RoundedCornerShape(16.dp),
-                            modifier = Modifier
-                                .weight(0.65f)
-                                .defaultMinSize(minHeight = 52.dp)
-                                .testTag("step2_next_button")
-                        ) {
-                            Text("Continue to Details", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (faceReadyToContinue) {
+                            Button(
+                                onClick = { step = 3 },
+                                shape = RoundedCornerShape(16.dp),
+                                modifier = Modifier
+                                    .weight(0.65f)
+                                    .defaultMinSize(minHeight = 52.dp)
+                                    .testTag("step2_next_button")
+                            ) {
+                                Text("Continue to Details", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
                         }
+                    }
+                    if (!faceReadyToContinue) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            text = if (isUploadingFace) {
+                                "Uploading verified face photo..."
+                            } else {
+                                "Complete live face verification above to continue."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
+                        )
                     }
                 }
 
@@ -1354,7 +1396,9 @@ fun VerificationScreen(
                                 value = shopName,
                                 onValueChange = {
                                     shopName = it
-                                    if (shopSlug.isBlank()) shopSlug = Formatters.slugify(it)
+                                    if (!usernameManuallyEdited) {
+                                        shopSlug = Formatters.generateStoreUsernameFromName(it)
+                                    }
                                 },
                                 label = { Text("Store Name") },
                                 singleLine = true,
@@ -1368,18 +1412,18 @@ fun VerificationScreen(
 
                             Spacer(modifier = Modifier.height(12.dp))
 
-                            OutlinedTextField(
-                                value = shopSlug,
-                                onValueChange = { shopSlug = it.lowercase().filter { c -> c.isLetterOrDigit() || c == '-' || c == '_' } },
-                                label = { Text("Store @handle") },
-                                prefix = { Text("@") },
-                                singleLine = true,
-                                shape = RoundedCornerShape(14.dp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
+                            StoreUsernameField(
+                                username = shopSlug,
+                                storeName = shopName,
+                                recheckTrigger = usernameConflictNonce,
+                                onUsernameChange = { shopSlug = it },
+                                onUserEdited = { usernameManuallyEdited = true },
+                                onCheckUsername = onCheckStoreUsername,
+                                onStateChange = { usernameUiState = it },
+                                fieldModifier = Modifier
                                     .bringIntoViewRequester(storeSlugBringer)
-                                    .onFocusEvent { if (it.isFocused) scope.launch { delay(160); storeSlugBringer.bringIntoView() } }
-                                    .testTag("onboarding_store_slug")
+                                    .onFocusEvent { if (it.isFocused) scope.launch { delay(160); storeSlugBringer.bringIntoView() } },
+                                testTag = "onboarding_store_slug"
                             )
 
                             Spacer(modifier = Modifier.height(12.dp))
@@ -1432,7 +1476,7 @@ fun VerificationScreen(
                             onClick = {
                                 when {
                                     shopName.isBlank() -> onToast("Enter your store name", true)
-                                    shopSlug.isBlank() -> onToast("Enter your store @handle", true)
+                                    !usernameUiState.canProceed -> onToast("Choose an available store username", true)
                                     else -> {
                                         val finalDetails = SellerIdentityDetails(
                                             fullName = fullName.trim(),
@@ -1469,7 +1513,12 @@ fun VerificationScreen(
                                     }
                                 }
                             },
-                            enabled = !isBusy && !uploadingStoreLogo && !uploadingStoreBanner,
+                            enabled = shopName.isNotBlank() &&
+                                usernameUiState.canProceed &&
+                                !usernameUiState.isChecking &&
+                                !isBusy &&
+                                !uploadingStoreLogo &&
+                                !uploadingStoreBanner,
                             shape = RoundedCornerShape(16.dp),
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 14.dp),
                             modifier = Modifier

@@ -177,6 +177,50 @@ object Formatters {
         return "${SupabaseConfig.WEB_BASE_URL}/$slug-$code"
     }
 
+    val STORE_USERNAME_REGEX = Regex("^[a-z0-9]+(-[a-z0-9]+)*$")
+
+    val RESERVED_STORE_USERNAMES: Set<String> = setOf(
+        "admin", "administrator", "zulvaza", "support", "shop", "store",
+        "api", "official", "seller", "sellers", "seller-center", "help",
+        "root", "system", "verify", "verification", "dashboard", "login",
+        "signup", "auth", "settings", "www", "mail", "team", "staff"
+    )
+
+    fun sanitizeStoreUsernameTyping(raw: String): String {
+        return raw.lowercase(Locale.US)
+            .filter { (it in 'a'..'z') || (it in '0'..'9') || it == '-' }
+            .take(30)
+    }
+
+    fun generateStoreUsernameFromName(storeName: String): String {
+        return storeName.lowercase(Locale.US)
+            .replace(Regex("[^a-z0-9]+"), "-")
+            .trim('-')
+            .take(30)
+            .trimEnd('-')
+    }
+
+    fun isValidStoreUsernameFormat(username: String): Boolean {
+        return username.length in 3..30 && STORE_USERNAME_REGEX.matches(username)
+    }
+
+    fun isReservedStoreUsername(username: String): Boolean {
+        return username.lowercase(Locale.US) in RESERVED_STORE_USERNAMES
+    }
+
+    fun buildUsernameSuggestions(storeName: String, currentUsername: String): List<String> {
+        val cleaned = generateStoreUsernameFromName(storeName.ifBlank { currentUsername })
+            .take(21)
+            .trimEnd('-')
+            .ifBlank { "my-shop" }
+        return listOf(
+            "$cleaned-pk",
+            "$cleaned-store",
+            "$cleaned-official",
+            "$cleaned-shop"
+        ).filter { it.length in 3..30 && STORE_USERNAME_REGEX.matches(it) && !isReservedStoreUsername(it) }
+    }
+
     fun generateProductCode10(): String {
         val first = Random.nextInt(1, 10)
         val rest = (1..9).map { Random.nextInt(0, 10) }.joinToString("")

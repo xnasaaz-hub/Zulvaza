@@ -696,6 +696,8 @@ fun CnicLiveCameraOverlayScreen(
     var capturedReadyResult by remember { mutableStateOf<CnicCaptureResult?>(null) }
     var detectionProgress by remember { mutableFloatStateOf(0f) }
     var cardDetectedState by remember { mutableStateOf(false) }
+    var ocrReadyState by remember { mutableStateOf(false) }
+    var steadyState by remember { mutableStateOf(false) }
     var liveHint by remember { mutableStateOf("Place your CNIC $sideLabel card inside the frame") }
     var previewSize by remember { mutableStateOf(IntSize.Zero) }
 
@@ -933,18 +935,24 @@ fun CnicLiveCameraOverlayScreen(
                                             metrics.meanLuma < 45 -> {
                                                 confirmedCardHits = 0
                                                 cardDetectedState = false
+                                                ocrReadyState = false
+                                                steadyState = false
                                                 detectionProgress = 0.05f
                                                 liveHint = "Too dark — turn on flash or move to brighter light"
                                             }
                                             metrics.edgeScore < 7.5 || metrics.borderContrast < 7.0 -> {
                                                 confirmedCardHits = 0
                                                 cardDetectedState = false
+                                                ocrReadyState = false
+                                                steadyState = false
                                                 detectionProgress = 0.15f
                                                 liveHint = "No card detected — align CNIC $sideLabel inside the box"
                                             }
                                             !ocrPlausible -> {
                                                 confirmedCardHits = (confirmedCardHits - 1).coerceAtLeast(0)
-                                                cardDetectedState = false
+                                                cardDetectedState = true
+                                                ocrReadyState = false
+                                                steadyState = metrics.isSteady
                                                 detectionProgress = 0.35f
                                                 liveHint = if (detectedTextLines > 0) {
                                                     "Reading CNIC $sideLabel text — move slightly closer & steady"
@@ -954,13 +962,17 @@ fun CnicLiveCameraOverlayScreen(
                                             }
                                             !metrics.isSteady -> {
                                                 cardDetectedState = true
-                                                detectionProgress = 0.65f
+                                                ocrReadyState = true
+                                                steadyState = false
+                                                detectionProgress = 0.68f
                                                 liveHint = "CNIC $sideLabel detected! Hold steady..."
                                             }
                                             else -> {
                                                 confirmedCardHits++
                                                 cardDetectedState = true
-                                                detectionProgress = (0.5f + confirmedCardHits * 0.25f).coerceIn(0f, 1f)
+                                                ocrReadyState = true
+                                                steadyState = true
+                                                detectionProgress = (0.55f + confirmedCardHits * 0.225f).coerceIn(0f, 1f)
                                                 liveHint = "CNIC $sideLabel verified — cropping card..."
                                                 if (confirmedCardHits >= 2) {
                                                     triggerAutoCapture()
@@ -996,9 +1008,9 @@ fun CnicLiveCameraOverlayScreen(
                 modifier = Modifier.fillMaxSize()
             )
 
-            // Darkened mask + 85.6:54 ID Card frame + corner brackets + scanning beam
+            // Darkened mask + 85.6:54 ID Card frame + alignment guide + scanning beam
             val frameColor = when {
-                showSuccessTick || cardDetectedState -> SuccessGreen
+                showSuccessTick || (cardDetectedState && ocrReadyState) -> SuccessGreen
                 else -> ZulvazaOrange
             }
 
@@ -1013,20 +1025,48 @@ fun CnicLiveCameraOverlayScreen(
                 val cutPath = Path().apply { addRoundRect(roundRect) }
 
                 clipPath(cutPath, clipOp = ClipOp.Difference) {
-                    drawRect(Color.Black.copy(alpha = 0.76f))
+                    drawRect(Color(0xFF060B14).copy(alpha = 0.82f))
                 }
 
                 // Border outline matching exact crop bounds
                 drawRoundRect(
-                    color = frameColor.copy(alpha = 0.55f),
+                    color = frameColor.copy(alpha = 0.60f),
                     topLeft = Offset(left, top),
                     size = Size(frameWidth, frameHeight),
                     cornerRadius = CornerRadius(18.dp.toPx(), 18.dp.toPx()),
                     style = Stroke(width = 2.dp.toPx())
                 )
 
+                // Subtle ID layout alignment guides inside cutout
+                if (!showSuccessTick) {
+                    val guideStroke = 1.2.dp.toPx()
+                    val guideCol = Color.White.copy(alpha = 0.20f)
+                    if (sideLabel.equals("Front", ignoreCase = true)) {
+                        // Portrait box on left side + chip & detail guide lines
+                        val photoW = frameWidth * 0.22f
+                        val photoH = frameHeight * 0.44f
+                        drawRoundRect(
+                            color = guideCol,
+                            topLeft = Offset(left + frameWidth * 0.06f, top + frameHeight * 0.26f),
+                            size = Size(photoW, photoH),
+                            cornerRadius = CornerRadius(8.dp.toPx(), 8.dp.toPx()),
+                            style = Stroke(width = guideStroke)
+                        )
+                    } else {
+                        // QR box watermark on right for Back side
+                        val qrSide = frameHeight * 0.34f
+                        drawRoundRect(
+                            color = guideCol,
+                            topLeft = Offset(left + frameWidth - qrSide - frameWidth * 0.07f, top + frameHeight * 0.50f),
+                            size = Size(qrSide, qrSide),
+                            cornerRadius = CornerRadius(6.dp.toPx(), 6.dp.toPx()),
+                            style = Stroke(width = guideStroke)
+                        )
+                    }
+                }
+
                 // Bold corner brackets
-                val bracketLen = 28.dp.toPx()
+                val bracketLen = 30.dp.toPx()
                 val bracketStroke = 4.5.dp.toPx()
                 // Top-left
                 drawLine(frameColor, Offset(left, top + bracketLen), Offset(left, top + 8.dp.toPx()), bracketStroke, StrokeCap.Round)
@@ -1047,7 +1087,7 @@ fun CnicLiveCameraOverlayScreen(
                         brush = Brush.horizontalGradient(
                             listOf(
                                 Color.Transparent,
-                                frameColor.copy(alpha = 0.9f),
+                                frameColor.copy(alpha = 0.92f),
                                 Color.Transparent
                             )
                         ),
@@ -1087,7 +1127,7 @@ fun CnicLiveCameraOverlayScreen(
                     }
                     Spacer(modifier = Modifier.height(14.dp))
                     Surface(
-                        color = Color.Black.copy(alpha = 0.8f),
+                        color = Color.Black.copy(alpha = 0.85f),
                         shape = RoundedCornerShape(50)
                     ) {
                         Text(
@@ -1101,76 +1141,95 @@ fun CnicLiveCameraOverlayScreen(
                 }
             }
 
-            // Top Controls
-            Row(
+            // Top Glassmorphic Controls + Segmented Front/Back Stepper
+            Column(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .fillMaxWidth()
                     .padding(16.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                IconButton(
-                    onClick = onClose,
-                    modifier = Modifier
-                        .size(48.dp)
-                        .background(Color.Black.copy(alpha = 0.55f), CircleShape)
-                        .testTag("cnic_camera_close")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.Default.Close, contentDescription = "Close scanner", tint = Color.White)
-                }
+                    IconButton(
+                        onClick = onClose,
+                        modifier = Modifier
+                            .size(48.dp)
+                            .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                            .testTag("cnic_camera_close")
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = "Close scanner", tint = Color.White)
+                    }
 
-                Surface(
-                    color = Color.Black.copy(alpha = 0.68f),
-                    shape = RoundedCornerShape(50)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                    Surface(
+                        color = Color(0xFF0F172A).copy(alpha = 0.84f),
+                        shape = RoundedCornerShape(50),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f))
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Badge,
+                                contentDescription = null,
+                                tint = ZulvazaOrange,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = stepBadge,
+                                color = Color.White,
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+
+                    IconButton(
+                        onClick = {
+                            torchEnabled = !torchEnabled
+                            boundCamera?.cameraControl?.enableTorch(torchEnabled)
+                        },
+                        modifier = Modifier
+                            .size(48.dp)
+                            .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                            .testTag("cnic_camera_torch")
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Badge,
-                            contentDescription = null,
-                            tint = ZulvazaOrange,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = stepBadge,
-                            color = Color.White,
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.SemiBold
+                            imageVector = if (torchEnabled) Icons.Default.FlashOn else Icons.Default.FlashOff,
+                            contentDescription = "Toggle flash",
+                            tint = if (torchEnabled) ZulvazaOrange else Color.White
                         )
                     }
                 }
 
-                IconButton(
-                    onClick = {
-                        torchEnabled = !torchEnabled
-                        boundCamera?.cameraControl?.enableTorch(torchEnabled)
-                    },
-                    modifier = Modifier
-                        .size(48.dp)
-                        .background(Color.Black.copy(alpha = 0.55f), CircleShape)
-                        .testTag("cnic_camera_torch")
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // 2-Side Progress Dots
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = if (torchEnabled) Icons.Default.FlashOn else Icons.Default.FlashOff,
-                        contentDescription = "Toggle flash",
-                        tint = if (torchEnabled) ZulvazaOrange else Color.White
-                    )
+                    val isBack = sideLabel.equals("Back", ignoreCase = true)
+                    CnicSideDotPill("1. Front", active = !isBack, done = isBack)
+                    CnicSideDotPill("2. Back", active = isBack, done = false)
                 }
             }
 
-            // Bottom Smart Detection Status Card (auto-capture only)
+            // Bottom Smart Detection Status Card (3-Pill Readiness + Live Hint)
             if (!showSuccessTick) {
                 Surface(
-                    color = Color(0xFF0F172A).copy(alpha = 0.90f),
-                    shape = RoundedCornerShape(22.dp),
+                    color = Color(0xFF0F172A).copy(alpha = 0.92f),
+                    shape = RoundedCornerShape(24.dp),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 26.dp)
+                        .padding(horizontal = 20.dp, vertical = 22.dp)
                 ) {
                     Column(
                         modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
@@ -1187,14 +1246,25 @@ fun CnicLiveCameraOverlayScreen(
                         }
 
                         Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            CnicReadinessChip("Card", cardDetectedState, Modifier.weight(1f))
+                            CnicReadinessChip("OCR Text", ocrReadyState, Modifier.weight(1f))
+                            CnicReadinessChip("Steady", steadyState, Modifier.weight(1f))
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.Center
                         ) {
                             Icon(
                                 imageVector = Icons.Default.DocumentScanner,
                                 contentDescription = null,
-                                tint = if (cardDetectedState) SuccessGreen else ZulvazaOrange,
-                                modifier = Modifier.size(20.dp)
+                                tint = if (cardDetectedState && ocrReadyState) SuccessGreen else ZulvazaOrange,
+                                modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
@@ -1208,8 +1278,8 @@ fun CnicLiveCameraOverlayScreen(
                         Spacer(modifier = Modifier.height(10.dp))
                         LinearProgressIndicator(
                             progress = { detectionProgress },
-                            color = if (cardDetectedState) SuccessGreen else ZulvazaOrange,
-                            trackColor = Color.White.copy(alpha = 0.22f),
+                            color = if (cardDetectedState && ocrReadyState) SuccessGreen else ZulvazaOrange,
+                            trackColor = Color.White.copy(alpha = 0.20f),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(6.dp)
@@ -1217,14 +1287,81 @@ fun CnicLiveCameraOverlayScreen(
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "Only the CNIC $sideLabel card inside the frame is captured — background is automatically removed.",
-                            color = Color.White.copy(alpha = 0.72f),
+                            text = "Background is automatically cropped out — keep CNIC edges inside the frame.",
+                            color = Color.White.copy(alpha = 0.68f),
                             style = MaterialTheme.typography.labelSmall,
                             textAlign = TextAlign.Center
                         )
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun CnicSideDotPill(label: String, active: Boolean, done: Boolean) {
+    Surface(
+        color = when {
+            done -> SuccessGreen.copy(alpha = 0.24f)
+            active -> ZulvazaOrange.copy(alpha = 0.26f)
+            else -> Color.White.copy(alpha = 0.08f)
+        },
+        shape = RoundedCornerShape(50),
+        border = BorderStroke(
+            1.dp,
+            when {
+                done -> SuccessGreen.copy(alpha = 0.7f)
+                active -> ZulvazaOrange
+                else -> Color.White.copy(alpha = 0.2f)
+            }
+        )
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (done) {
+                Icon(Icons.Default.Check, contentDescription = null, tint = SuccessGreen, modifier = Modifier.size(13.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+            }
+            Text(
+                text = label,
+                color = Color.White,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = if (active || done) FontWeight.Bold else FontWeight.Medium
+            )
+        }
+    }
+}
+
+@Composable
+private fun CnicReadinessChip(label: String, ready: Boolean, modifier: Modifier = Modifier) {
+    Surface(
+        color = if (ready) SuccessGreen.copy(alpha = 0.18f) else Color.White.copy(alpha = 0.06f),
+        shape = RoundedCornerShape(10.dp),
+        border = BorderStroke(1.dp, if (ready) SuccessGreen.copy(alpha = 0.65f) else Color.White.copy(alpha = 0.14f)),
+        modifier = modifier
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = if (ready) Icons.Default.CheckCircle else Icons.Default.DocumentScanner,
+                contentDescription = null,
+                tint = if (ready) SuccessGreen else Color.White.copy(alpha = 0.45f),
+                modifier = Modifier.size(13.dp)
+            )
+            Spacer(modifier = Modifier.width(5.dp))
+            Text(
+                text = label,
+                color = if (ready) Color.White else Color.White.copy(alpha = 0.65f),
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = if (ready) FontWeight.Bold else FontWeight.Medium,
+                maxLines = 1
+            )
         }
     }
 }
