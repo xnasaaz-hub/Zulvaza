@@ -794,11 +794,30 @@ fun ProductDetailView(
             fontWeight = FontWeight.Bold
         )
         Spacer(modifier = Modifier.height(6.dp))
-        Text(
-            text = "Stock: ${product.stock}  •  Sales: ${product.sales}",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            if (product.category.isNotBlank()) {
+                Surface(
+                    color = ZulvazaOrange.copy(alpha = 0.12f),
+                    shape = RoundedCornerShape(50)
+                ) {
+                    Text(
+                        text = product.category,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = ZulvazaOrange,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                    )
+                }
+            }
+            Text(
+                text = "Stock: ${product.stock}  •  Sales: ${product.sales}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
 
         if (!videoUrl.isNullOrBlank()) {
             Spacer(modifier = Modifier.height(16.dp))

@@ -43,18 +43,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AddBox
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Error
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Inventory2
-import androidx.compose.material.icons.filled.Storefront
-import androidx.compose.material.icons.outlined.AddBox
-import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.Storefront
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -320,6 +313,7 @@ private fun MainSellerShell(
 
     var editingProduct by remember { mutableStateOf<ProductItem?>(null) }
     var resumingDraft by remember { mutableStateOf<ProductDraft?>(null) }
+    var productFormResetKey by remember { mutableIntStateOf(0) }
     var dashboardDetailProduct by remember { mutableStateOf<ProductItem?>(null) }
     var sharingProduct by remember { mutableStateOf<ProductItem?>(null) }
     var showEditStoreSheet by remember { mutableStateOf(false) }
@@ -469,6 +463,7 @@ private fun MainSellerShell(
                 sellerId = state.session?.userId.orEmpty(),
                 isBusy = state.isBusy,
                 resolveImageUrl = viewModel::resolveProductImageUrl,
+                resolveVideoUrl = viewModel::resolveProductVideoUrl,
                 onUploadImage = viewModel::uploadProductImage,
                 onUploadVideo = viewModel::uploadProductVideo,
                 onSaveDraft = viewModel::saveOrAutosaveDraft,
@@ -571,12 +566,12 @@ private fun MainSellerShell(
                     ) {
                         Spacer(modifier = Modifier.height(12.dp))
                         val railItems = listOf(
-                            Triple(MainTab.HOME, "Home", Pair(Icons.Filled.Home, Icons.Outlined.Home)),
-                            Triple(MainTab.PRODUCTS, "All Products", Pair(Icons.Filled.Inventory2, Icons.Outlined.Inventory2)),
-                            Triple(MainTab.ADD_PRODUCT, "Add Product", Pair(Icons.Filled.AddBox, Icons.Outlined.AddBox)),
-                            Triple(MainTab.MY_STORE, "My Store", Pair(Icons.Filled.Storefront, Icons.Outlined.Storefront))
+                            Triple(MainTab.HOME, "Home", Pair(R.drawable.ic_nav_home_filled, R.drawable.ic_nav_home_outlined)),
+                            Triple(MainTab.PRODUCTS, "All Products", Pair(R.drawable.ic_nav_products_filled, R.drawable.ic_nav_products_outlined)),
+                            Triple(MainTab.ADD_PRODUCT, "Add Product", Pair(R.drawable.ic_nav_add_filled, R.drawable.ic_nav_add_outlined)),
+                            Triple(MainTab.MY_STORE, "My Store", Pair(R.drawable.ic_nav_store_filled, R.drawable.ic_nav_store_outlined))
                         )
-                        railItems.forEach { (tab, label, icons) ->
+                        railItems.forEach { (tab, label, iconResPair) ->
                             val selected = state.activeTab == tab
                             NavigationRailItem(
                                 selected = selected,
@@ -586,7 +581,7 @@ private fun MainSellerShell(
                                         isMyStore = tab == MainTab.MY_STORE,
                                         storeLogoUrl = storeLogoUrl,
                                         selected = selected,
-                                        fallbackIcon = if (selected) icons.first else icons.second,
+                                        fallbackIconRes = if (selected) iconResPair.first else iconResPair.second,
                                         label = label
                                     )
                                 },
@@ -632,7 +627,9 @@ private fun MainSellerShell(
                             resumingDraft = null,
                             sellerId = state.session?.userId.orEmpty(),
                             isBusy = state.isBusy,
+                            formResetKey = productFormResetKey,
                             resolveImageUrl = viewModel::resolveProductImageUrl,
+                            resolveVideoUrl = viewModel::resolveProductVideoUrl,
                             onUploadImage = viewModel::uploadProductImage,
                             onUploadVideo = viewModel::uploadProductVideo,
                             onSaveDraft = viewModel::saveOrAutosaveDraft,
@@ -649,6 +646,7 @@ private fun MainSellerShell(
                                     attributes = attrs,
                                     draftIdToDelete = draftId
                                 ) {
+                                    productFormResetKey++
                                     viewModel.selectTab(MainTab.PRODUCTS)
                                 }
                             },
@@ -657,12 +655,15 @@ private fun MainSellerShell(
                         )
                         MainTab.MY_STORE -> StoreProfileScreen(
                             store = state.store,
+                            verification = state.verification,
                             products = state.products,
                             resolveStoreMedia = viewModel::resolveStoreMediaUrl,
+                            resolveProductImage = viewModel::resolveProductImageUrl,
                             onUploadStoreMediaBytes = viewModel::uploadStoreMediaBytes,
                             onSaveStoreMedia = viewModel::saveStoreMediaOnly,
                             onDeleteStoreMedia = viewModel::removeStoreMedia,
                             onEditStore = { showEditStoreSheet = true },
+                            onOpenProductDetail = { p -> dashboardDetailProduct = p },
                             onToast = viewModel::showToast
                         )
                     }
@@ -686,7 +687,7 @@ private fun StoreTabNavIcon(
     isMyStore: Boolean,
     storeLogoUrl: String?,
     selected: Boolean,
-    fallbackIcon: androidx.compose.ui.graphics.vector.ImageVector,
+    fallbackIconRes: Int,
     label: String
 ) {
     if (isMyStore && !storeLogoUrl.isNullOrBlank()) {
@@ -705,7 +706,7 @@ private fun StoreTabNavIcon(
         )
     } else {
         Icon(
-            imageVector = fallbackIcon,
+            painter = painterResource(id = fallbackIconRes),
             contentDescription = label,
             modifier = Modifier.size(22.dp)
         )
@@ -841,10 +842,10 @@ private fun SellerBottomNavBar(
     onSelectTab: (MainTab) -> Unit
 ) {
     val navItems = listOf(
-        Triple(MainTab.HOME, "Home", Pair(Icons.Filled.Home, Icons.Outlined.Home)),
-        Triple(MainTab.PRODUCTS, "All Products", Pair(Icons.Filled.Inventory2, Icons.Outlined.Inventory2)),
-        Triple(MainTab.ADD_PRODUCT, "Add Product", Pair(Icons.Filled.AddBox, Icons.Outlined.AddBox)),
-        Triple(MainTab.MY_STORE, "My Store", Pair(Icons.Filled.Storefront, Icons.Outlined.Storefront))
+        Triple(MainTab.HOME, "Home", Pair(R.drawable.ic_nav_home_filled, R.drawable.ic_nav_home_outlined)),
+        Triple(MainTab.PRODUCTS, "All Products", Pair(R.drawable.ic_nav_products_filled, R.drawable.ic_nav_products_outlined)),
+        Triple(MainTab.ADD_PRODUCT, "Add Product", Pair(R.drawable.ic_nav_add_filled, R.drawable.ic_nav_add_outlined)),
+        Triple(MainTab.MY_STORE, "My Store", Pair(R.drawable.ic_nav_store_filled, R.drawable.ic_nav_store_outlined))
     )
     val navTags = mapOf(
         MainTab.HOME to "nav_home",
@@ -853,50 +854,56 @@ private fun SellerBottomNavBar(
         MainTab.MY_STORE to "nav_my_store"
     )
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surface)
-            .navigationBarsPadding()
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        shadowElevation = 14.dp,
+        tonalElevation = 0.dp,
+        modifier = Modifier.fillMaxWidth()
     ) {
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.75f))
-        NavigationBar(
-            containerColor = MaterialTheme.colorScheme.surface,
-            tonalElevation = 0.dp
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
         ) {
-            navItems.forEach { (tab, label, icons) ->
-                val selected = activeTab == tab
-                NavigationBarItem(
-                    selected = selected,
-                    onClick = { onSelectTab(tab) },
-                    alwaysShowLabel = true,
-                    icon = {
-                        StoreTabNavIcon(
-                            isMyStore = tab == MainTab.MY_STORE,
-                            storeLogoUrl = storeLogoUrl,
-                            selected = selected,
-                            fallbackIcon = if (selected) icons.first else icons.second,
-                            label = label
-                        )
-                    },
-                    label = {
-                        Text(
-                            text = label,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    },
-                    colors = NavigationBarItemDefaults.colors(
-                        selectedIconColor = ZulvazaOrange,
-                        selectedTextColor = ZulvazaOrange,
-                        unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                        unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                        indicatorColor = ZulvazaOrange.copy(alpha = 0.14f)
-                    ),
-                    modifier = Modifier.testTag(navTags[tab] ?: tab.name)
-                )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
+            NavigationBar(
+                containerColor = MaterialTheme.colorScheme.surface,
+                tonalElevation = 0.dp
+            ) {
+                navItems.forEach { (tab, label, iconResPair) ->
+                    val selected = activeTab == tab
+                    NavigationBarItem(
+                        selected = selected,
+                        onClick = { onSelectTab(tab) },
+                        alwaysShowLabel = true,
+                        icon = {
+                            StoreTabNavIcon(
+                                isMyStore = tab == MainTab.MY_STORE,
+                                storeLogoUrl = storeLogoUrl,
+                                selected = selected,
+                                fallbackIconRes = if (selected) iconResPair.first else iconResPair.second,
+                                label = label
+                            )
+                        },
+                        label = {
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = ZulvazaOrange,
+                            selectedTextColor = ZulvazaOrange,
+                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            indicatorColor = ZulvazaOrange.copy(alpha = 0.14f)
+                        ),
+                        modifier = Modifier.testTag(navTags[tab] ?: tab.name)
+                    )
+                }
             }
         }
     }

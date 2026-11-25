@@ -126,12 +126,35 @@ class SupabaseClient {
             put("password", password)
             put("data", JSONObject().apply { put("account_type", "seller") })
         }
-        val resp = executeJson(
-            method = "POST",
-            url = "${SupabaseConfig.SUPABASE_URL}/auth/v1/signup",
-            bodyJson = payload.toString()
-        )
+        val resp = try {
+            executeJson(
+                method = "POST",
+                url = "${SupabaseConfig.SUPABASE_URL}/auth/v1/signup",
+                bodyJson = payload.toString()
+            )
+        } catch (e: SupabaseException) {
+            val lower = e.message.orEmpty().lowercase()
+            if (lower.contains("already registered") ||
+                lower.contains("already exists") ||
+                lower.contains("user_already_exists")
+            ) {
+                throw SupabaseException(
+                    "An account with this email already exists. Please sign in instead.",
+                    statusCode = e.statusCode,
+                    pgCode = e.pgCode
+                )
+            }
+            throw e
+        }
         val json = JSONObject(resp)
+        // Supabase GoTrue returns HTTP 200 with identities=[] when Confirm Email is ON and email already exists
+        val identities = json.optJSONArray("identities")
+        if (identities != null && identities.length() == 0) {
+            throw SupabaseException(
+                "An account with this email already exists. Please sign in instead.",
+                statusCode = 409
+            )
+        }
         val access = json.optString("access_token")
         return if (access.isNotBlank() && access != "null") parseSession(json) else null
     }
@@ -389,32 +412,80 @@ class SupabaseClient {
     }
 
     suspend fun fetchCurrentNetworkGeo(): Pair<String, String> = withContext(Dispatchers.IO) {
-        try {
+        // Provider 1: ipwho.is
+        runCatching {
             val req = Request.Builder()
                 .url("https://ipwho.is/")
+                .header("Accept", "application/json")
                 .get()
                 .build()
             client.newCall(req).execute().use { resp ->
                 if (resp.isSuccessful) {
-                    val body = resp.body?.string().orEmpty()
-                    val json = JSONObject(body)
+                    val json = JSONObject(resp.body?.string().orEmpty())
                     if (json.optBoolean("success", true)) {
-                        val ip = json.optString("ip").takeIf { it.isNotBlank() } ?: "Detected IP"
-                        val city = json.optString("city").takeIf { it.isNotBlank() }
-                        val country = json.optString("country").takeIf { it.isNotBlank() }
-                        val location = listOfNotNull(city, country).joinToString(", ").ifBlank { "Pakistan" }
-                        return@withContext ip to location
+                        val ip = json.optString("ip").takeIf { it.isNotBlank() && it != "null" }
+                        val city = json.optString("city").takeIf { it.isNotBlank() && it != "null" }
+                        val country = json.optString("country").takeIf { it.isNotBlank() && it != "null" }
+                        if (!ip.isNullOrBlank()) {
+                            val loc = listOfNotNull(city, country).joinToString(", ").ifBlank { "Pakistan" }
+                            return@withContext ip to loc
+                        }
                     }
                 }
             }
-        } catch (_: Exception) {
         }
+
+        // Provider 2: ipapi.co
+        runCatching {
+            val req = Request.Builder()
+                .url("https://ipapi.co/json/")
+                .header("User-Agent", "ZulvazaSellerAndroid/1.0")
+                .header("Accept", "application/json")
+                .get()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val json = JSONObject(resp.body?.string().orEmpty())
+                    if (!json.optBoolean("error", false)) {
+                        val ip = json.optString("ip").takeIf { it.isNotBlank() && it != "null" }
+                        val city = json.optString("city").takeIf { it.isNotBlank() && it != "null" }
+                        val country = json.optString("country_name").takeIf { it.isNotBlank() && it != "null" }
+                        if (!ip.isNullOrBlank()) {
+                            val loc = listOfNotNull(city, country).joinToString(", ").ifBlank { "Pakistan" }
+                            return@withContext ip to loc
+                        }
+                    }
+                }
+            }
+        }
+
+        // Provider 3: freeipapi.com
+        runCatching {
+            val req = Request.Builder()
+                .url("https://freeipapi.com/api/json")
+                .header("Accept", "application/json")
+                .get()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val json = JSONObject(resp.body?.string().orEmpty())
+                    val ip = json.optString("ipAddress").takeIf { it.isNotBlank() && it != "null" }
+                    val city = json.optString("cityName").takeIf { it.isNotBlank() && it != "null" }
+                    val country = json.optString("countryName").takeIf { it.isNotBlank() && it != "null" }
+                    if (!ip.isNullOrBlank()) {
+                        val loc = listOfNotNull(city, country).joinToString(", ").ifBlank { "Pakistan" }
+                        return@withContext ip to loc
+                    }
+                }
+            }
+        }
+
         val localIp = runCatching {
             java.net.NetworkInterface.getNetworkInterfaces()?.toList()
                 ?.flatMap { it.inetAddresses.toList() }
                 ?.firstOrNull { !it.isLoopbackAddress && it is java.net.Inet4Address }
                 ?.hostAddress
-        }.getOrNull() ?: "Local Network"
+        }.getOrNull() ?: "Detected Network"
         localIp to "Pakistan"
     }
 

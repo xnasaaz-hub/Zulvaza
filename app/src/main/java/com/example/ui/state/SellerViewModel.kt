@@ -49,6 +49,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
@@ -146,6 +148,8 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
 
     private var pendingDeepLink: DeepLinkDestination? = null
     private var cnicOcrJob: Job? = null
+    private val notificationMutex = Mutex()
+    private val refreshResumeMutex = Mutex()
 
     init {
         NotificationHelper.ensureChannel(application.applicationContext)
@@ -191,15 +195,6 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
     fun onNotificationPermissionGranted() {
         viewModelScope.launch {
             NotificationHelper.ensureChannel(getApplication())
-            val unread = _uiState.value.notifications.firstOrNull { !it.isRead }
-            if (unread != null) {
-                NotificationHelper.postLocalNotification(
-                    context = getApplication(),
-                    notificationId = unread.id.hashCode(),
-                    title = unread.title,
-                    body = unread.message
-                )
-            }
         }
     }
 
@@ -678,7 +673,7 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
                         )
                     }
                 }
-                showToast("6-digit verification code sent via support.zulvaza.com to $cleanEmail")
+                showToast("6-digit verification code sent to $cleanEmail. Check inbox or spam.")
             } catch (e: Exception) {
                 _uiState.update { it.copy(isBusy = false) }
                 showToast(e.message ?: "Sign up failed", isError = true)
@@ -726,7 +721,7 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
                 } else {
                     supabase.resendSignupOtp(email)
                 }
-                showToast("New 6-digit code sent via support.zulvaza.com to $email")
+                showToast("New 6-digit code sent to $email. Check inbox or spam.")
             } catch (e: Exception) {
                 showToast(e.message ?: "Failed to resend code", isError = true)
             }
@@ -968,83 +963,83 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
         devices: List<ActiveDeviceSession>,
         currentDeviceId: String
     ) {
-        val known = sessionStore.loadKnownDeviceIds()
-        val remoteIds = devices.map { it.deviceId }.toSet()
-        if (known == null) {
-            // Seed with current device so any other active/new device triggers an alert
-            sessionStore.saveKnownDeviceIds(remoteIds + currentDeviceId)
-            val others = devices.filter { !it.isCurrentDevice }
-            others.forEach { dev ->
-                pushNotification(
-                    title = "Another Device Signed In",
-                    message = "${dev.deviceName} (${dev.cityCountry}) is active on your seller account.",
-                    type = NotificationType.DEVICE_LOGIN,
-                    targetRoute = "devices"
-                )
+        val newlySeen = notificationMutex.withLock {
+            val known = sessionStore.loadKnownDeviceIds()
+            val remoteIds = devices.map { it.deviceId }.toSet()
+            if (known == null) {
+                // Seed known devices on first sync without flooding alerts for existing sessions
+                sessionStore.saveKnownDeviceIds(remoteIds + currentDeviceId)
+                return@withLock emptyList()
             }
-            return
+            val unseen = devices.filter { !it.isCurrentDevice && it.deviceId !in known }
+            if (unseen.isNotEmpty() || !known.containsAll(remoteIds)) {
+                sessionStore.saveKnownDeviceIds(known + remoteIds + currentDeviceId)
+            }
+            unseen
         }
-        val newlySeen = devices.filter { !it.isCurrentDevice && it.deviceId !in known }
-        if (newlySeen.isNotEmpty()) {
-            sessionStore.saveKnownDeviceIds(known + remoteIds + currentDeviceId)
-            newlySeen.forEach { dev ->
-                pushNotification(
-                    title = "New Device Login Detected",
-                    message = "${dev.deviceName} (${dev.osVersion}) signed in from ${dev.cityCountry}.",
-                    type = NotificationType.DEVICE_LOGIN,
-                    targetRoute = "devices"
-                )
-            }
-        } else if (!known.containsAll(remoteIds)) {
-            sessionStore.saveKnownDeviceIds(known + remoteIds + currentDeviceId)
+        newlySeen.forEach { dev ->
+            pushNotification(
+                title = "New Device Login Detected",
+                message = "${dev.deviceName} (${dev.osVersion}) signed in from ${dev.cityCountry}.",
+                type = NotificationType.DEVICE_LOGIN,
+                targetRoute = "devices"
+            )
         }
     }
 
     fun refreshNotificationsAndStatusOnResume() {
-        val currentSession = _uiState.value.session ?: return
+        if (_uiState.value.session == null) return
         if (!_uiState.value.isOnline) return
         viewModelScope.launch {
-            runCatching {
-                withValidSession { session ->
-                    val verification = supabase.fetchVerification(session)
-                    val events = runCatching { supabase.fetchVerificationEvents(session) }.getOrDefault(_uiState.value.verificationEvents)
-                    val deviceId = sessionStore.getOrCreateDeviceId()
-                    val deviceName = listOf(Build.MANUFACTURER, Build.MODEL)
-                        .filter { it.isNotBlank() }
-                        .joinToString(" ")
-                        .ifBlank { "Android Device" }
-                    val (devices, wasRevoked) = runCatching {
-                        supabase.syncActiveDevices(session, deviceId, deviceName, "Android ${Build.VERSION.RELEASE}")
-                    }.getOrDefault(_uiState.value.activeDevices to false)
-                    if (wasRevoked) {
-                        signOut()
-                        return@withValidSession
+            if (!refreshResumeMutex.tryLock()) return@launch
+            try {
+                runCatching {
+                    withValidSession { session ->
+                        val verification = supabase.fetchVerification(session)
+                        val events = runCatching { supabase.fetchVerificationEvents(session) }.getOrDefault(_uiState.value.verificationEvents)
+                        val deviceId = sessionStore.getOrCreateDeviceId()
+                        val deviceName = listOf(Build.MANUFACTURER, Build.MODEL)
+                            .filter { it.isNotBlank() }
+                            .joinToString(" ")
+                            .ifBlank { "Android Device" }
+                        val (devices, wasRevoked) = runCatching {
+                            supabase.syncActiveDevices(session, deviceId, deviceName, "Android ${Build.VERSION.RELEASE}")
+                        }.getOrDefault(_uiState.value.activeDevices to false)
+                        if (wasRevoked) {
+                            signOut()
+                            return@withValidSession
+                        }
+                        _uiState.update {
+                            it.copy(
+                                verification = verification,
+                                verificationEvents = events,
+                                activeDevices = devices
+                            )
+                        }
+                        evaluateVerificationStatusNotification(verification)
+                        evaluateDeviceLoginNotifications(devices, deviceId)
+                        checkForAppUpdateSilent()
                     }
-                    _uiState.update {
-                        it.copy(
-                            verification = verification,
-                            verificationEvents = events,
-                            activeDevices = devices
-                        )
-                    }
-                    evaluateVerificationStatusNotification(verification)
-                    evaluateDeviceLoginNotifications(devices, deviceId)
-                    checkForAppUpdateSilent()
                 }
+            } finally {
+                refreshResumeMutex.unlock()
             }
         }
     }
 
     private suspend fun evaluateVerificationStatusNotification(verification: SellerVerification) {
-        val prevRaw = sessionStore.getLastKnownVerificationStatus()
-        val currRaw = verification.status.raw
-        if (prevRaw == currRaw) return
-        if (prevRaw == null && verification.status == VerificationStatus.UNSUBMITTED) {
+        val statusToNotify: VerificationStatus? = notificationMutex.withLock {
+            val prevRaw = sessionStore.getLastKnownVerificationStatus()
+            val currRaw = verification.status.raw
+            if (prevRaw == currRaw) return@withLock null
+            if (prevRaw == null && verification.status == VerificationStatus.UNSUBMITTED) {
+                sessionStore.setLastKnownVerificationStatus(currRaw)
+                return@withLock null
+            }
             sessionStore.setLastKnownVerificationStatus(currRaw)
-            return
+            verification.status
         }
-        sessionStore.setLastKnownVerificationStatus(currRaw)
-        when (verification.status) {
+        when (statusToNotify) {
             VerificationStatus.PENDING -> pushNotification(
                 title = "Verification Under Review",
                 message = "Your CNIC, face verification & store details are under review. We'll notify you once approved.",
@@ -1074,24 +1069,40 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
         type: NotificationType,
         targetRoute: String? = null
     ) {
-        val item = SellerNotificationItem(
-            id = UUID.randomUUID().toString(),
-            title = title,
-            message = message,
-            type = type,
-            createdAtEpochMs = System.currentTimeMillis(),
-            isRead = false,
-            targetRoute = targetRoute
-        )
-        val updated = (listOf(item) + _uiState.value.notifications).take(100)
-        sessionStore.saveNotifications(updated)
-        _uiState.update { it.copy(notifications = updated) }
-        NotificationHelper.postLocalNotification(
-            context = getApplication(),
-            notificationId = item.id.hashCode(),
-            title = title,
-            body = message
-        )
+        val (item, shouldNotify) = notificationMutex.withLock {
+            val now = System.currentTimeMillis()
+            val recentDuplicate = _uiState.value.notifications.any { existing ->
+                existing.type == type &&
+                    existing.title == title &&
+                    existing.message == message &&
+                    (now - existing.createdAtEpochMs) < 10 * 60 * 1000L
+            }
+            if (recentDuplicate) {
+                return@withLock null to false
+            }
+            val created = SellerNotificationItem(
+                id = UUID.randomUUID().toString(),
+                title = title,
+                message = message,
+                type = type,
+                createdAtEpochMs = now,
+                isRead = false,
+                targetRoute = targetRoute
+            )
+            val updated = (listOf(created) + _uiState.value.notifications).take(100)
+            sessionStore.saveNotifications(updated)
+            _uiState.update { it.copy(notifications = updated) }
+            created to true
+        }
+        if (shouldNotify && item != null) {
+            val stableTrayId = "${type.raw}:${title.lowercase(Locale.US)}".hashCode()
+            NotificationHelper.postLocalNotification(
+                context = getApplication(),
+                notificationId = stableTrayId,
+                title = title,
+                body = message
+            )
+        }
     }
 
     fun markNotificationRead(id: String) {
@@ -1900,6 +1911,7 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
     ) {
         if (editingProduct != null) {
             val unchanged = editingProduct.name.trim() == name.trim() &&
+                editingProduct.category.ifBlank { "General" } == category.ifBlank { "General" } &&
                 editingProduct.price == price &&
                 editingProduct.stock == stock &&
                 editingProduct.description.trim() == description.trim() &&
@@ -1916,11 +1928,13 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
             _uiState.update { it.copy(isBusy = true) }
             try {
                 withValidSession { session ->
+                    val authUserId = supabase.getAuthenticatedUserId(session)
+                    val authedSession = if (session.userId == authUserId) session else session.copy(userId = authUserId)
                     val code = editingProduct?.productCode?.takeIf { it.length == 10 }
                         ?: Formatters.generateProductCode10()
                     val item = ProductItem(
                         id = editingProduct?.id ?: "",
-                        sellerId = session.userId,
+                        sellerId = authUserId,
                         name = name,
                         description = description,
                         price = price,
@@ -1930,19 +1944,19 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
                         imagePaths = imagePaths,
                         videoPath = videoPath,
                         productCode = code,
-                        category = category,
+                        category = category.ifBlank { "General" },
                         attributes = attributes
                     )
                     if (editingProduct == null) {
-                        supabase.insertProduct(session, item)
+                        supabase.insertProduct(authedSession, item)
                     } else {
-                        supabase.updateProduct(session, item)
+                        supabase.updateProduct(authedSession, item)
                     }
                     if (!draftIdToDelete.isNullOrBlank()) {
-                        runCatching { supabase.deleteDraft(session, draftIdToDelete) }
+                        runCatching { supabase.deleteDraft(authedSession, draftIdToDelete) }
                     }
-                    val updatedList = supabase.fetchProducts(session)
-                    val updatedDrafts = runCatching { supabase.fetchDrafts(session) }.getOrDefault(_uiState.value.drafts)
+                    val updatedList = supabase.fetchProducts(authedSession)
+                    val updatedDrafts = runCatching { supabase.fetchDrafts(authedSession) }.getOrDefault(_uiState.value.drafts)
                     sessionStore.saveWorkspaceCache(_uiState.value.verification, _uiState.value.store, updatedList)
                     _uiState.update {
                         it.copy(products = updatedList, drafts = updatedDrafts, isBusy = false)
@@ -2021,8 +2035,10 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
     suspend fun saveOrAutosaveDraft(draft: ProductDraft, silent: Boolean): ProductDraft? {
         return try {
             val saved = withValidSession { session ->
-                val res = supabase.saveDraft(session, draft)
-                val all = supabase.fetchDrafts(session)
+                val authUserId = supabase.getAuthenticatedUserId(session)
+                val authedSession = if (session.userId == authUserId) session else session.copy(userId = authUserId)
+                val res = supabase.saveDraft(authedSession, draft.copy(sellerId = authUserId))
+                val all = supabase.fetchDrafts(authedSession)
                 _uiState.update { it.copy(drafts = all) }
                 res
             }
@@ -2107,10 +2123,26 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
                 chosenExt to chosenMime
             }
 
+            val declaredSize = resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { c ->
+                val sizeIdx = c.getColumnIndex(OpenableColumns.SIZE)
+                if (c.moveToFirst() && sizeIdx >= 0) c.getLong(sizeIdx) else -1L
+            } ?: -1L
+            val maxBytes = if (isVideo) 50L * 1024L * 1024L else 12L * 1024L * 1024L
+            if (declaredSize > maxBytes) {
+                throw IllegalStateException(
+                    if (isVideo) "Product video must be under 50 MB" else "Image must be under 12 MB"
+                )
+            }
+
             val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
                 ?: throw IllegalStateException("Unable to read selected file")
             if (bytes.isEmpty()) {
                 throw IllegalStateException("Selected file is empty")
+            }
+            if (bytes.size.toLong() > maxBytes) {
+                throw IllegalStateException(
+                    if (isVideo) "Product video must be under 50 MB" else "Image must be under 12 MB"
+                )
             }
             MediaPayload(bytes = bytes, extension = ext, mimeType = mime)
         }

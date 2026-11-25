@@ -9,6 +9,7 @@ import android.net.Uri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -39,8 +40,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -81,7 +80,10 @@ import com.example.ui.theme.ZulvazaOrange
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.Locale
 import kotlin.math.max
 import kotlin.math.min
@@ -244,6 +246,30 @@ fun ImageCropDialog(
                                 offsetX = clampedX
                                 offsetY = clampedY
                             }
+                        }
+                        .pointerInput(sourceBitmap, viewportSize) {
+                            detectTapGestures(
+                                onDoubleTap = {
+                                    val bmp = sourceBitmap ?: return@detectTapGestures
+                                    if (zoom > 1.25f) {
+                                        zoom = 1f
+                                        offsetX = 0f
+                                        offsetY = 0f
+                                    } else {
+                                        val nextZoom = 2.4f
+                                        val (clampedX, clampedY) = clampOffset(
+                                            offsetX,
+                                            offsetY,
+                                            nextZoom,
+                                            bmp,
+                                            viewportSize
+                                        )
+                                        zoom = nextZoom
+                                        offsetX = clampedX
+                                        offsetY = clampedY
+                                    }
+                                }
+                            )
                         },
                     contentAlignment = Alignment.Center
                 ) {
@@ -356,7 +382,7 @@ fun ImageCropDialog(
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = "Pinch or drag to position",
+                                    text = "Pinch, drag, or double-tap to zoom & position",
                                     style = MaterialTheme.typography.labelMedium,
                                     color = Color.White.copy(alpha = 0.78f)
                                 )
@@ -375,26 +401,7 @@ fun ImageCropDialog(
                             }
                         }
 
-                        Slider(
-                            value = zoom,
-                            onValueChange = { nextZoom ->
-                                val bmp = sourceBitmap
-                                zoom = nextZoom
-                                if (bmp != null) {
-                                    val (cx, cy) = clampOffset(offsetX, offsetY, nextZoom, bmp, viewportSize)
-                                    offsetX = cx
-                                    offsetY = cy
-                                }
-                            },
-                            valueRange = 1f..4f,
-                            colors = SliderDefaults.colors(
-                                thumbColor = ZulvazaOrange,
-                                activeTrackColor = ZulvazaOrange,
-                                inactiveTrackColor = Color.White.copy(alpha = 0.18f)
-                            )
-                        )
-
-                        Spacer(modifier = Modifier.height(6.dp))
+                        Spacer(modifier = Modifier.height(14.dp))
 
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -507,6 +514,35 @@ private fun cropBitmapToJpeg(
 
 private fun decodeOrientedBitmap(context: Context, uri: Uri, maxDim: Int): Bitmap? {
     return try {
+        val scheme = uri.scheme?.lowercase(Locale.US)
+        if (scheme == "http" || scheme == "https") {
+            val conn = (URL(uri.toString()).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 15_000
+                readTimeout = 20_000
+                instanceFollowRedirects = true
+            }
+            val bytes = try {
+                conn.inputStream.use { it.readBytes() }
+            } finally {
+                conn.disconnect()
+            }
+            if (bytes.isEmpty()) return null
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            val maxSide = max(bounds.outWidth, bounds.outHeight).coerceAtLeast(1)
+            var sampleSize = 1
+            while (maxSide / sampleSize > maxDim * 2) sampleSize *= 2
+            val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+            val raw = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOpts) ?: return null
+            val orientation = runCatching {
+                ExifInterface(ByteArrayInputStream(bytes)).getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION,
+                    ExifInterface.ORIENTATION_NORMAL
+                )
+            }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
+            return applyExifOrientation(raw, orientation)
+        }
+
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
         val maxSide = max(bounds.outWidth, bounds.outHeight).coerceAtLeast(1)
@@ -527,17 +563,21 @@ private fun decodeOrientedBitmap(context: Context, uri: Uri, maxDim: Int): Bitma
             )
         } ?: ExifInterface.ORIENTATION_NORMAL
 
-        val matrix = Matrix()
-        when (orientation) {
-            ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
-            ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
-            ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
-            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.postScale(-1f, 1f)
-            ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.postScale(1f, -1f)
-            else -> return raw
-        }
-        Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, matrix, true)
+        applyExifOrientation(raw, orientation)
     } catch (_: Exception) {
         null
     }
+}
+
+private fun applyExifOrientation(raw: Bitmap, orientation: Int): Bitmap {
+    val matrix = Matrix()
+    when (orientation) {
+        ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+        ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+        ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+        ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.postScale(-1f, 1f)
+        ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.postScale(1f, -1f)
+        else -> return raw
+    }
+    return Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, matrix, true)
 }

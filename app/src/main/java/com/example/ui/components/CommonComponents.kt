@@ -372,31 +372,57 @@ fun OtpCodeBoxes(
                 ) {
                     repeat(6) { index ->
                         val char = code.getOrNull(index)?.toString() ?: ""
-                        val isFocused = index == code.length.coerceAtMost(5)
+                        val isActive = enabled && index == code.length.coerceAtMost(5) && code.length < 6
+                        val isFilled = char.isNotEmpty()
+                        val boxBg = when {
+                            isFilled -> ZulvazaOrange.copy(alpha = 0.08f)
+                            isActive -> ZulvazaOrange.copy(alpha = 0.04f)
+                            else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                        }
+                        val borderColor = when {
+                            isActive -> ZulvazaOrange
+                            isFilled -> ZulvazaNavy.copy(alpha = 0.72f)
+                            else -> MaterialTheme.colorScheme.outline.copy(alpha = 0.75f)
+                        }
                         Surface(
                             shape = RoundedCornerShape(14.dp),
-                            color = MaterialTheme.colorScheme.surface,
-                            tonalElevation = 1.dp,
+                            color = boxBg,
+                            shadowElevation = if (isActive || isFilled) 2.dp else 0.dp,
                             modifier = Modifier
                                 .weight(1f)
-                                .height(56.dp)
+                                .height(60.dp)
                                 .border(
-                                    width = if (isFocused) 2.dp else 1.dp,
-                                    color = when {
-                                        char.isNotEmpty() -> ZulvazaOrange
-                                        isFocused -> ZulvazaNavy
-                                        else -> MaterialTheme.colorScheme.outline
-                                    },
+                                    width = if (isActive) 2.dp else 1.25.dp,
+                                    color = borderColor,
                                     shape = RoundedCornerShape(14.dp)
                                 )
                         ) {
                             Box(contentAlignment = Alignment.Center) {
-                                Text(
-                                    text = char,
-                                    style = MaterialTheme.typography.headlineMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
+                                if (isFilled) {
+                                    Text(
+                                        text = char,
+                                        style = MaterialTheme.typography.headlineSmall,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = ZulvazaNavy
+                                    )
+                                } else if (isActive) {
+                                    Box(
+                                        modifier = Modifier
+                                            .align(Alignment.BottomCenter)
+                                            .padding(bottom = 12.dp)
+                                            .width(18.dp)
+                                            .height(3.dp)
+                                            .clip(RoundedCornerShape(50))
+                                            .background(ZulvazaOrange)
+                                    )
+                                } else {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(6.dp)
+                                            .clip(CircleShape)
+                                            .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.25f))
+                                    )
+                                }
                             }
                         }
                     }

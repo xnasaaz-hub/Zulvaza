@@ -75,6 +75,7 @@ data class StoreUsernameUiState(
 fun StoreUsernameField(
     username: String,
     storeName: String,
+    initialSavedUsername: String = "",
     recheckTrigger: Int = 0,
     onUsernameChange: (String) -> Unit,
     onUserEdited: () -> Unit,
@@ -92,7 +93,11 @@ fun StoreUsernameField(
         onStateChange(next)
     }
 
-    LaunchedEffect(username, recheckTrigger) {
+    val normalizedSaved = remember(initialSavedUsername) {
+        initialSavedUsername.trim().lowercase()
+    }
+
+    LaunchedEffect(username, recheckTrigger, normalizedSaved) {
         val trimmed = username.trim().lowercase()
         when {
             trimmed.isEmpty() -> {
@@ -103,6 +108,17 @@ fun StoreUsernameField(
                         isChecking = false,
                         canProceed = false,
                         message = "3–30 characters: lowercase letters, numbers, or hyphens"
+                    )
+                )
+            }
+            normalizedSaved.isNotEmpty() && trimmed == normalizedSaved -> {
+                latestSeq++
+                publishState(
+                    StoreUsernameUiState(
+                        status = StoreUsernameStatus.OWN,
+                        isChecking = false,
+                        canProceed = true,
+                        message = ""
                     )
                 )
             }
@@ -159,13 +175,13 @@ fun StoreUsernameField(
                             status = StoreUsernameStatus.OWN,
                             isChecking = false,
                             canProceed = true,
-                            message = "Current store username • zulvaza.com/shop/$trimmed"
+                            message = ""
                         )
                         "taken" -> StoreUsernameUiState(
                             status = StoreUsernameStatus.TAKEN,
                             isChecking = false,
                             canProceed = false,
-                            message = "\"@$trimmed\" is already taken. Pick one below:"
+                            message = "This username is taken"
                         )
                         "reserved" -> StoreUsernameUiState(
                             status = StoreUsernameStatus.RESERVED,
@@ -236,7 +252,7 @@ fun StoreUsernameField(
                             color = ZulvazaOrange
                         )
                     }
-                    isSuccessState -> {
+                    isSuccessState && uiState.message.isNotBlank() -> {
                         Icon(
                             imageVector = Icons.Default.CheckCircle,
                             contentDescription = "Username available",
@@ -269,23 +285,25 @@ fun StoreUsernameField(
                 .testTag(testTag)
         )
 
-        Spacer(modifier = Modifier.height(6.dp))
+        if (uiState.message.isNotBlank()) {
+            Spacer(modifier = Modifier.height(6.dp))
 
-        Text(
-            text = uiState.message,
-            style = MaterialTheme.typography.labelMedium,
-            color = when {
-                isSuccessState -> SuccessGreen
-                isErrorState -> ErrorRed
-                uiState.isChecking -> ZulvazaOrange
-                else -> MaterialTheme.colorScheme.onSurfaceVariant
-            },
-            fontWeight = if (isSuccessState || isErrorState) FontWeight.SemiBold else FontWeight.Normal,
-            modifier = Modifier
-                .fillMaxWidth()
-                .semantics { liveRegion = LiveRegionMode.Polite }
-                .testTag("${testTag}_status")
-        )
+            Text(
+                text = uiState.message,
+                style = MaterialTheme.typography.labelMedium,
+                color = when {
+                    isSuccessState -> SuccessGreen
+                    isErrorState -> ErrorRed
+                    uiState.isChecking -> ZulvazaOrange
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                fontWeight = if (isSuccessState || isErrorState) FontWeight.SemiBold else FontWeight.Normal,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics { liveRegion = LiveRegionMode.Polite }
+                    .testTag("${testTag}_status")
+            )
+        }
 
         if (uiState.status == StoreUsernameStatus.TAKEN) {
             val suggestions = remember(storeName, username) {

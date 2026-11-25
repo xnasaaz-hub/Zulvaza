@@ -194,4 +194,32 @@ class ExampleUnitTest {
         assertTrue(summary.contains("ocr_cnic_found"))
         assertTrue(summary.contains("match_passed"))
     }
+
+    @Test
+    fun formatIsoToDmyDisplay_formatsCorrectly() {
+        assertEquals("14/08/1997", Formatters.formatIsoToDmyDisplay("1997-08-14"))
+        assertEquals("05/03/2030", Formatters.formatIsoToDmyDisplay("05/03/2030"))
+        assertEquals("", Formatters.formatIsoToDmyDisplay(""))
+    }
+
+    @Test
+    fun cnicOcr_extractsMultilineNameSkippingUrduAndFallback() {
+        val rawCnic = """
+            PAKISTAN
+            National Identity Card
+            Name
+            نام
+            Muhammad Bilal Qureshi
+            Father Name
+            Tariq Qureshi
+            Identity Number 54400-1234567-3
+            Date of Birth 02.11.1994
+            Date of Issue 10.01.2022
+            Date of Expiry 10.01.2032
+        """.trimIndent()
+        val extracted = CnicMatchValidator.extractCnicDetails(rawCnic, "")
+        assertEquals("Muhammad Bilal Qureshi", extracted.fullName)
+        assertEquals("5440012345673", extracted.cnicDigits)
+        assertEquals("1994-11-02", extracted.dateOfBirth)
+    }
 }

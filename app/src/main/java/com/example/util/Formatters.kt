@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color as AndroidColor
 import android.location.Geocoder
+import android.location.LocationManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -257,6 +258,22 @@ object Formatters {
         return sdf.format(Date(millis))
     }
 
+    fun formatIsoToDmyDisplay(isoOrDmy: String?): String {
+        val raw = isoOrDmy?.trim().orEmpty()
+        if (raw.isBlank()) return ""
+        val isoMatch = Regex("^(\\d{4})-(\\d{2})-(\\d{2})$").matchEntire(raw)
+        if (isoMatch != null) {
+            val (y, m, d) = isoMatch.destructured
+            return "$d/$m/$y"
+        }
+        val dmyMatch = Regex("^(\\d{2})[./-](\\d{2})[./-](\\d{4})$").matchEntire(raw)
+        if (dmyMatch != null) {
+            val (d, m, y) = dmyMatch.destructured
+            return "$d/$m/$y"
+        }
+        return raw
+    }
+
     fun generateQrBitmap(content: String, sizePx: Int = 512): Bitmap? {
         return try {
             val hints = mapOf(EncodeHintType.MARGIN to 2)
@@ -352,12 +369,25 @@ data class ReverseGeocodeResult(
 object LocationHelper {
     private val httpClient = OkHttpClient()
 
+    fun isLocationServiceEnabled(context: Context): Boolean {
+        val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return false
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            lm.isLocationEnabled
+        } else {
+            runCatching {
+                lm.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+                    lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+            }.getOrDefault(false)
+        }
+    }
+
     @Suppress("DEPRECATION")
     suspend fun reverseGeocode(
         context: Context,
         latitude: Double,
         longitude: Double
     ): ReverseGeocodeResult = withContext(Dispatchers.IO) {
+        var androidResult = ReverseGeocodeResult()
         try {
             if (Geocoder.isPresent()) {
                 val geocoder = Geocoder(context, Locale.getDefault())
@@ -373,21 +403,28 @@ object LocationHelper {
                     val full = (0..addr.maxAddressLineIndex)
                         .mapNotNull { addr.getAddressLine(it) }
                         .joinToString(", ")
-                    if (city.isNotBlank() || full.isNotBlank()) {
-                        return@withContext ReverseGeocodeResult(
-                            city = city,
-                            street = street,
-                            state = state,
-                            address = full,
-                            zipCode = zip
-                        )
-                    }
+                    androidResult = ReverseGeocodeResult(
+                        city = city,
+                        street = street,
+                        state = state,
+                        address = full,
+                        zipCode = zip
+                    )
                 }
             }
         } catch (_: Exception) {
         }
 
-        // Nominatim fallback when Android Geocoder service isn't available
+        // Return early only if all primary fields including zipCode are populated
+        if (androidResult.city.isNotBlank() &&
+            androidResult.state.isNotBlank() &&
+            androidResult.address.isNotBlank() &&
+            androidResult.zipCode.isNotBlank()
+        ) {
+            return@withContext androidResult
+        }
+
+        // Nominatim enrichment/fallback (reliably supplies postcode & administrative divisions)
         try {
             val req = Request.Builder()
                 .url("https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=$latitude&lon=$longitude")
@@ -398,30 +435,31 @@ object LocationHelper {
                     val body = resp.body?.string().orEmpty()
                     val json = JSONObject(body)
                     val addressObj = json.optJSONObject("address")
-                    val city = addressObj?.optString("city")
+                    val nomCity = addressObj?.optString("city")
                         ?.ifBlank { addressObj.optString("town") }
+                        ?.ifBlank { addressObj.optString("village") }
                         ?.ifBlank { addressObj.optString("county") }
                         .orEmpty()
-                    val street = listOf(
+                    val nomStreet = listOf(
                         addressObj?.optString("house_number").orEmpty(),
                         addressObj?.optString("road").orEmpty(),
                         addressObj?.optString("suburb").orEmpty()
                     ).filter { it.isNotBlank() }.joinToString(", ")
-                    val state = addressObj?.optString("state").orEmpty()
-                    val zip = addressObj?.optString("postcode").orEmpty().filter { it.isDigit() }.take(5)
-                    val display = json.optString("display_name")
+                    val nomState = addressObj?.optString("state").orEmpty()
+                    val nomZip = addressObj?.optString("postcode").orEmpty().filter { it.isDigit() }.take(5)
+                    val nomDisplay = json.optString("display_name")
                     return@withContext ReverseGeocodeResult(
-                        city = city,
-                        street = street,
-                        state = state,
-                        address = display,
-                        zipCode = zip
+                        city = androidResult.city.ifBlank { nomCity },
+                        street = androidResult.street.ifBlank { nomStreet },
+                        state = androidResult.state.ifBlank { nomState },
+                        address = androidResult.address.ifBlank { nomDisplay },
+                        zipCode = androidResult.zipCode.ifBlank { nomZip }
                     )
                 }
             }
         } catch (_: Exception) {
         }
-        ReverseGeocodeResult()
+        androidResult
     }
 }
 

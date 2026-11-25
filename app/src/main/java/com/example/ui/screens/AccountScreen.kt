@@ -60,6 +60,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -762,7 +763,10 @@ private fun TwoFactorSecurityPage(
                     )
                 }
 
-                Spacer(modifier = Modifier.height(10.dp))
+                HorizontalDivider(
+                    modifier = Modifier.padding(vertical = 14.dp),
+                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)
+                )
                 Text(
                     "Use Google Authenticator, Authy, or 1Password for a 6-digit login code. Turning OFF or removing 2FA strictly requires entering a valid 6-digit code.",
                     style = MaterialTheme.typography.bodySmall,
@@ -854,13 +858,14 @@ private fun TwoFactorSecurityPage(
                     Text(
                         "Scan this QR in Google Authenticator or save it to your gallery.",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
                     )
-                    Spacer(modifier = Modifier.height(14.dp))
+                    Spacer(modifier = Modifier.height(16.dp))
 
-                    QrCodeImage(content = mfaEnrollment.totpUri)
+                    QrCodeImage(content = mfaEnrollment.totpUri, sizeDp = 196.dp)
 
-                    Spacer(modifier = Modifier.height(14.dp))
+                    Spacer(modifier = Modifier.height(16.dp))
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -1604,10 +1609,10 @@ private fun VerificationDetailsPage(
                 Text("Identity Information", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 VerificationDetailRow("Full Name", d.fullName.ifBlank { "—" })
                 VerificationDetailRow("CNIC Number", Formatters.formatCnicDisplay(d.cnic).ifBlank { "—" })
-                VerificationDetailRow("Date of Birth", d.dateOfBirth.ifBlank { "—" })
+                VerificationDetailRow("Date of Birth", Formatters.formatIsoToDmyDisplay(d.dateOfBirth).ifBlank { "—" })
                 VerificationDetailRow("Gender", d.gender.replaceFirstChar { it.uppercase() }.ifBlank { "—" })
-                VerificationDetailRow("Issue Date", d.issueDate.ifBlank { "—" })
-                VerificationDetailRow("Expiry Date", d.expiryDate.ifBlank { "—" })
+                VerificationDetailRow("Issue Date", Formatters.formatIsoToDmyDisplay(d.issueDate).ifBlank { "—" })
+                VerificationDetailRow("Expiry Date", Formatters.formatIsoToDmyDisplay(d.expiryDate).ifBlank { "—" })
                 VerificationDetailRow("Mobile Phone", d.phone.ifBlank { "—" })
                 VerificationDetailRow("WhatsApp", d.whatsapp.ifBlank { "—" })
             }

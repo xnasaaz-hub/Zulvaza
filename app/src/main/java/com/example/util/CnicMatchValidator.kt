@@ -40,8 +40,8 @@ object CnicMatchValidator {
     )
 
     private val CNIC_REGEX = Regex("\\b(\\d{5})[-\\s]?(\\d{7})[-\\s]?(\\d)\\b")
-    private val DATE_DMY_REGEX = Regex("\\b(\\d{2})[./-](\\d{2})[./-](\\d{4})\\b")
-    private val DATE_YMD_REGEX = Regex("\\b(\\d{4})[./-](\\d{2})[./-](\\d{2})\\b")
+    private val DATE_DMY_REGEX = Regex("\\b(\\d{2})\\s*[./-]\\s*(\\d{2})\\s*[./-]\\s*(\\d{4})\\b")
+    private val DATE_YMD_REGEX = Regex("\\b(\\d{4})\\s*[./-]\\s*(\\d{2})\\s*[./-]\\s*(\\d{2})\\b")
 
     fun extractCnicDigits(rawText: String): String? {
         val cleaned = rawText
@@ -165,21 +165,43 @@ object CnicMatchValidator {
 
     private fun extractNameFromOcr(frontText: String): String {
         val lines = frontText.lines().map { it.trim() }.filter { it.isNotBlank() }
+        // Pass 1: Look for explicit "Name" label (handles inline, next-line, or +2 line past Urdu text)
         for (i in lines.indices) {
             val line = lines[i]
             val upper = line.uppercase(Locale.US)
-            if (upper.startsWith("NAME")) {
+            val isNameHeader = Regex("^N[A4]ME\\b.*").matches(upper) &&
+                !upper.contains("FATHER") &&
+                !upper.contains("HUSBAND")
+            if (isNameHeader) {
                 val inline = line.substringAfter(':', "").trim()
                 if (inline.length >= 3 && isLikelyPersonName(inline)) {
                     return formatDisplayName(inline)
                 }
-                val afterWord = line.replace(Regex("(?i)^name\\b[:\\s-]*"), "").trim()
+                val afterWord = line.replace(Regex("(?i)^N[A4]ME\\b[:\\s-]*"), "").trim()
                 if (afterWord.length >= 3 && isLikelyPersonName(afterWord)) {
                     return formatDisplayName(afterWord)
                 }
-                val nextLine = lines.getOrNull(i + 1).orEmpty()
-                if (isLikelyPersonName(nextLine)) {
-                    return formatDisplayName(nextLine)
+                for (offset in 1..2) {
+                    val candidate = lines.getOrNull(i + offset).orEmpty()
+                    val candUpper = candidate.uppercase(Locale.US)
+                    if (candUpper.contains("FATHER") || candUpper.contains("HUSBAND")) break
+                    if (isLikelyPersonName(candidate)) {
+                        return formatDisplayName(candidate)
+                    }
+                }
+            }
+        }
+        // Pass 2: Fallback heuristic when ML Kit omits or misreads the "Name" label
+        for (i in lines.indices) {
+            val line = lines[i]
+            val upper = line.uppercase(Locale.US)
+            if (upper.contains("FATHER") || upper.contains("HUSBAND")) break
+            if (isLikelyPersonName(line)) {
+                val words = line.uppercase(Locale.US)
+                    .split(Regex("[^A-Z]+"))
+                    .filter { it.length >= 2 }
+                if (words.size in 2..4 && words.all { it !in NON_NAME_WORDS }) {
+                    return formatDisplayName(line)
                 }
             }
         }

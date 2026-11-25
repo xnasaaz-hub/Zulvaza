@@ -1,6 +1,8 @@
 package com.example.ui.screens
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -37,26 +39,41 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Inventory2
+import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Storefront
+import androidx.compose.material.icons.filled.Verified
+import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -67,6 +84,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusEvent
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -74,35 +92,47 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
+import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import com.example.R
 import com.example.data.model.ProductItem
 import com.example.data.model.ProductStatus
 import com.example.data.model.SellerStore
+import com.example.data.model.SellerVerification
 import com.example.data.model.SocialPlatform
+import com.example.data.model.VerificationStatus
+import com.example.ui.components.EmptyStateCard
+import com.example.ui.components.ImageCropDialog
+import com.example.ui.components.ProductStatusBadge
 import com.example.ui.components.SignedRemoteImage
 import com.example.ui.components.SocialBrandBadge
 import com.example.ui.components.StoreUsernameField
 import com.example.ui.components.StoreUsernameUiState
 import com.example.ui.components.copyToClipboard
 import com.example.ui.components.openExternalUrl
+import com.example.ui.theme.ErrorRed
 import com.example.ui.theme.JetBrainsMonoFontFamily
+import com.example.ui.theme.SuccessGreen
 import com.example.ui.theme.ZulvazaNavy
 import com.example.ui.theme.ZulvazaOrange
 import com.example.util.Formatters
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.io.File
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StoreProfileScreen(
     store: SellerStore?,
+    verification: SellerVerification,
     products: List<ProductItem>,
     resolveStoreMedia: (String?) -> String?,
+    resolveProductImage: (String) -> String?,
     onUploadStoreMediaBytes: suspend (ByteArray, String, String, String?, (Float) -> Unit) -> String,
     onSaveStoreMedia: (Boolean, String) -> Unit,
     onDeleteStoreMedia: (Boolean) -> Unit,
     onEditStore: () -> Unit,
+    onOpenProductDetail: (ProductItem) -> Unit,
     onToast: (String, Boolean) -> Unit
 ) {
     val context = LocalContext.current
@@ -117,10 +147,19 @@ fun StoreProfileScreen(
         "https://zulvaza.com"
     }
 
+    val sellerLocationLabel = remember(verification.details) {
+        listOf(verification.details.state.trim(), verification.details.city.trim())
+            .filter { it.isNotBlank() }
+            .joinToString(", ")
+    }
+
+    var selectedSectionTab by remember { mutableIntStateOf(0) } // 0 = About, 1 = Products
     var uploadingLogo by remember { mutableStateOf(false) }
     var uploadingBanner by remember { mutableStateOf(false) }
-    var previewMediaTarget by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
+    var mediaSheetTarget by remember { mutableStateOf<Pair<Boolean, String?>?>(null) }
     var cropMediaTarget by remember { mutableStateOf<Pair<Boolean, Uri>?>(null) }
+    var pendingCameraIsLogo by remember { mutableStateOf<Boolean?>(null) }
+    var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
 
     val logoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -138,9 +177,42 @@ fun StoreProfileScreen(
         }
     }
 
+    val cameraCaptureLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { success ->
+        val capturedUri = pendingCameraUri
+        val isLogoCapture = pendingCameraIsLogo
+        pendingCameraUri = null
+        pendingCameraIsLogo = null
+        if (success && capturedUri != null && isLogoCapture != null) {
+            cropMediaTarget = isLogoCapture to capturedUri
+        }
+    }
+
+    fun launchStoreCamera(isLogo: Boolean) {
+        val dir = File(context.cacheDir, "camera").apply { mkdirs() }
+        val file = File(dir, "store_${if (isLogo) "logo" else "banner"}_${System.currentTimeMillis()}.jpg")
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        pendingCameraIsLogo = isLogo
+        pendingCameraUri = uri
+        cameraCaptureLauncher.launch(uri)
+    }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        val isLogo = pendingCameraIsLogo ?: true
+        if (granted) {
+            launchStoreCamera(isLogo)
+        } else {
+            pendingCameraIsLogo = null
+            onToast("Camera permission is needed to take a photo", true)
+        }
+    }
+
     if (cropMediaTarget != null) {
         val (isLogo, pickedUri) = cropMediaTarget!!
-        com.example.ui.components.ImageCropDialog(
+        ImageCropDialog(
             imageUri = pickedUri,
             isCircularLogo = isLogo,
             title = if (isLogo) "Crop & Adjust Store Logo" else "Crop & Adjust Cover Banner",
@@ -168,128 +240,151 @@ fun StoreProfileScreen(
         )
     }
 
-    if (previewMediaTarget != null) {
-        val (isLogo, mediaUrl) = previewMediaTarget!!
-        Dialog(
-            onDismissRequest = { previewMediaTarget = null },
-            properties = DialogProperties(usePlatformDefaultWidth = false)
+    // JazzCash Business-Style Bottom Sheet for Logo & Banner Preview/Edit/Crop/Delete
+    if (mediaSheetTarget != null) {
+        val (isLogo, currentMediaUrl) = mediaSheetTarget!!
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = { mediaSheetTarget = null },
+            sheetState = sheetState,
+            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+            containerColor = MaterialTheme.colorScheme.surface,
+            dragHandle = { BottomSheetDefaults.DragHandle() }
         ) {
-            Surface(
-                shape = RoundedCornerShape(24.dp),
-                color = Color(0xFF0F172A),
-                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.1f)),
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(18.dp)
+                    .navigationBarsPadding()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Column(modifier = Modifier.padding(18.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                if (isLogo) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        border = BorderStroke(2.dp, ZulvazaOrange.copy(alpha = 0.7f)),
+                        shadowElevation = 2.dp,
+                        modifier = Modifier.size(124.dp)
                     ) {
-                        Text(
-                            text = if (isLogo) "Store Logo" else "Cover Banner",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold
-                        )
-                        IconButton(
-                            onClick = { previewMediaTarget = null },
-                            modifier = Modifier
-                                .size(48.dp)
-                                .background(Color.White.copy(alpha = 0.08f), CircleShape)
-                                .testTag("close_media_preview_button")
-                        ) {
-                            Icon(Icons.Default.Close, contentDescription = "Close preview", tint = Color.White)
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(14.dp))
-                    Box(
-                        modifier = Modifier.fillMaxWidth(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        SignedRemoteImage(
-                            url = mediaUrl,
-                            contentDescription = if (isLogo) "Store Logo" else "Store Banner",
-                            contentScale = ContentScale.Crop,
-                            modifier = if (isLogo) {
-                                Modifier
-                                    .size(220.dp)
-                                    .clip(CircleShape)
-                                    .border(2.dp, ZulvazaOrange, CircleShape)
-                                    .background(Color(0xFF1E293B))
-                            } else {
-                                Modifier
-                                    .fillMaxWidth()
-                                    .aspectRatio(16f / 9f)
-                                    .clip(RoundedCornerShape(16.dp))
-                                    .border(1.5.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(16.dp))
-                                    .background(Color(0xFF1E293B))
+                        if (!currentMediaUrl.isNullOrBlank()) {
+                            SignedRemoteImage(
+                                url = currentMediaUrl,
+                                contentDescription = "Store logo preview",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.Storefront,
+                                    contentDescription = "Store logo",
+                                    tint = ZulvazaOrange,
+                                    modifier = Modifier.size(48.dp)
+                                )
                             }
-                        )
+                        }
                     }
-                    Spacer(modifier = Modifier.height(18.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                } else {
+                    Surface(
+                        shape = RoundedCornerShape(18.dp),
+                        color = ZulvazaNavy,
+                        border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.outline),
+                        shadowElevation = 2.dp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(16f / 9f)
                     ) {
-                        OutlinedButton(
-                            onClick = {
-                                previewMediaTarget = null
-                                onDeleteStoreMedia(isLogo)
-                            },
-                            shape = RoundedCornerShape(14.dp),
-                            border = BorderStroke(1.dp, Color(0xFFF87171)),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .defaultMinSize(minHeight = 48.dp)
-                                .testTag(if (isLogo) "delete_store_logo_button" else "delete_store_banner_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.DeleteOutline,
-                                contentDescription = null,
-                                tint = Color(0xFFF87171),
-                                modifier = Modifier.size(18.dp)
+                        if (!currentMediaUrl.isNullOrBlank()) {
+                            SignedRemoteImage(
+                                url = currentMediaUrl,
+                                contentDescription = "Store banner preview",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
                             )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "Delete",
-                                color = Color(0xFFF87171),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        Button(
-                            onClick = {
-                                previewMediaTarget = null
-                                if (isLogo) {
-                                    logoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                                } else {
-                                    bannerPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                                }
-                            },
-                            shape = RoundedCornerShape(14.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .defaultMinSize(minHeight = 48.dp)
-                                .testTag(if (isLogo) "change_store_logo_button" else "change_store_banner_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.CameraAlt,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "Change",
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                        } else {
+                            Image(
+                                painter = painterResource(id = R.drawable.img_seller_hero),
+                                contentDescription = "Default banner preview",
+                                contentScale = ContentScale.Crop,
+                                alpha = 0.6f,
+                                modifier = Modifier.fillMaxSize()
                             )
                         }
                     }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Text(
+                    text = if (isLogo) "Edit your store logo" else "Edit your store banner",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.Medium
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.7f))
+                Spacer(modifier = Modifier.height(6.dp))
+
+                StoreMediaSheetActionRow(
+                    icon = Icons.Default.PhotoLibrary,
+                    label = "Choose Photo",
+                    tint = ZulvazaNavy,
+                    testTag = if (isLogo) "choose_store_logo_button" else "choose_store_banner_button",
+                    onClick = {
+                        mediaSheetTarget = null
+                        if (isLogo) {
+                            logoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        } else {
+                            bannerPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        }
+                    }
+                )
+
+                StoreMediaSheetActionRow(
+                    icon = Icons.Default.CameraAlt,
+                    label = "Take Photo",
+                    tint = ZulvazaNavy,
+                    testTag = if (isLogo) "take_store_logo_button" else "take_store_banner_button",
+                    onClick = {
+                        mediaSheetTarget = null
+                        val granted = ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.CAMERA
+                        ) == PackageManager.PERMISSION_GRANTED
+                        if (granted) {
+                            launchStoreCamera(isLogo)
+                        } else {
+                            pendingCameraIsLogo = isLogo
+                            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                        }
+                    }
+                )
+
+                if (!currentMediaUrl.isNullOrBlank()) {
+                    StoreMediaSheetActionRow(
+                        icon = Icons.Default.Crop,
+                        label = "Crop & Edit",
+                        tint = ZulvazaOrange,
+                        testTag = if (isLogo) "crop_store_logo_button" else "crop_store_banner_button",
+                        onClick = {
+                            mediaSheetTarget = null
+                            cropMediaTarget = isLogo to Uri.parse(currentMediaUrl)
+                        }
+                    )
+
+                    StoreMediaSheetActionRow(
+                        icon = Icons.Default.DeleteOutline,
+                        label = "Delete Photo",
+                        tint = ErrorRed,
+                        labelColor = ErrorRed,
+                        testTag = if (isLogo) "delete_store_logo_button" else "delete_store_banner_button",
+                        onClick = {
+                            mediaSheetTarget = null
+                            onDeleteStoreMedia(isLogo)
+                        }
+                    )
                 }
             }
         }
@@ -304,21 +399,15 @@ fun StoreProfileScreen(
             .background(MaterialTheme.colorScheme.background)
             .verticalScroll(rememberScrollState())
     ) {
-        // Cover Banner + Overlapping Interactive Logo
+        // Cover Banner + Overlapping Logo
         Box(modifier = Modifier.fillMaxWidth()) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(180.dp)
-                    .background(
-                        Brush.linearGradient(listOf(ZulvazaNavy, ZulvazaOrange))
-                    )
+                    .height(178.dp)
+                    .background(Brush.linearGradient(listOf(ZulvazaNavy, ZulvazaOrange)))
                     .clickable(enabled = !uploadingBanner) {
-                        if (!bannerUrl.isNullOrBlank()) {
-                            previewMediaTarget = false to bannerUrl
-                        } else {
-                            bannerPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                        }
+                        mediaSheetTarget = false to bannerUrl
                     }
                     .testTag("store_profile_banner_box")
             ) {
@@ -333,10 +422,23 @@ fun StoreProfileScreen(
                         painter = painterResource(id = R.drawable.img_seller_hero),
                         contentDescription = "Default store banner",
                         contentScale = ContentScale.Crop,
-                        alpha = 0.42f,
+                        alpha = 0.45f,
                         modifier = Modifier.fillMaxSize()
                     )
                 }
+
+                // Subtle bottom scrim for polished visual contrast
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp)
+                        .align(Alignment.BottomCenter)
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(Color.Transparent, Color.Black.copy(alpha = 0.35f))
+                            )
+                        )
+                )
 
                 Surface(
                     color = Color.Black.copy(alpha = 0.56f),
@@ -369,28 +471,22 @@ fun StoreProfileScreen(
                 }
             }
 
-            // Round Logo with Gradient Ring + Tap Camera Badge
+            // Circular Store Logo overlapping Banner
             Box(
                 modifier = Modifier
-                    .padding(start = 20.dp)
+                    .padding(start = 18.dp)
                     .offset(y = 132.dp)
-                    .size(94.dp)
+                    .size(92.dp)
             ) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .clip(CircleShape)
-                        .background(
-                            Brush.sweepGradient(listOf(ZulvazaOrange, ZulvazaNavy, ZulvazaOrange))
-                        )
-                        .padding(4.dp)
+                        .background(Brush.sweepGradient(listOf(ZulvazaOrange, ZulvazaNavy, ZulvazaOrange)))
+                        .padding(3.5.dp)
                         .clip(CircleShape)
                         .clickable(enabled = !uploadingLogo) {
-                            if (!logoUrl.isNullOrBlank()) {
-                                previewMediaTarget = true to logoUrl
-                            } else {
-                                logoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                            }
+                            mediaSheetTarget = true to logoUrl
                         }
                         .testTag("store_profile_logo_circle")
                 ) {
@@ -418,7 +514,7 @@ fun StoreProfileScreen(
                                         imageVector = Icons.Default.Storefront,
                                         contentDescription = "Upload store logo",
                                         tint = ZulvazaOrange,
-                                        modifier = Modifier.size(40.dp)
+                                        modifier = Modifier.size(38.dp)
                                     )
                                 }
                             }
@@ -432,19 +528,20 @@ fun StoreProfileScreen(
                     border = BorderStroke(2.dp, MaterialTheme.colorScheme.background),
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
-                        .size(30.dp)
+                        .size(28.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
                             imageVector = Icons.Default.CameraAlt,
                             contentDescription = "Edit logo",
                             tint = Color.White,
-                            modifier = Modifier.size(15.dp)
+                            modifier = Modifier.size(14.dp)
                         )
                     }
                 }
             }
 
+            // Separate Edit Store & Arrow Share Buttons
             Row(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
@@ -454,6 +551,20 @@ fun StoreProfileScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 OutlinedButton(
+                    onClick = onEditStore,
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                    modifier = Modifier
+                        .defaultMinSize(minHeight = 42.dp)
+                        .testTag("edit_store_button")
+                ) {
+                    Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Edit Store", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+
+                Button(
                     onClick = {
                         val shareIntent = Intent(Intent.ACTION_SEND).apply {
                             type = "text/plain"
@@ -468,79 +579,124 @@ fun StoreProfileScreen(
                         }
                         context.startActivity(Intent.createChooser(shareIntent, "Share Storefront"))
                     },
-                    shape = RoundedCornerShape(50),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ZulvazaNavy,
+                        contentColor = Color.White
+                    ),
+                    shape = RoundedCornerShape(14.dp),
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
                     modifier = Modifier
-                        .defaultMinSize(minHeight = 44.dp)
+                        .defaultMinSize(minHeight = 42.dp)
                         .testTag("share_store_button")
                 ) {
-                    Icon(Icons.Default.Share, contentDescription = "Share Storefront", modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
+                    Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(15.dp))
+                    Spacer(modifier = Modifier.width(5.dp))
                     Text("Share", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-
-                OutlinedButton(
-                    onClick = onEditStore,
-                    shape = RoundedCornerShape(50),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-                    modifier = Modifier
-                        .defaultMinSize(minHeight = 44.dp)
-                        .testTag("edit_store_button")
-                ) {
-                    Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Edit Store", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowForward,
+                        contentDescription = null,
+                        modifier = Modifier.size(15.dp)
+                    )
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(56.dp))
+        Spacer(modifier = Modifier.height(54.dp))
 
         Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-            Text(
-                text = store?.shopName?.takeIf { it.isNotBlank() } ?: "Set Up Your Storefront",
-                style = MaterialTheme.typography.headlineMedium
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = store?.shopName?.takeIf { it.isNotBlank() } ?: "Set Up Your Storefront",
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                if (verification.status == VerificationStatus.APPROVED) {
+                    Icon(
+                        imageVector = Icons.Default.Verified,
+                        contentDescription = "Verified seller",
+                        tint = SuccessGreen,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+            }
 
-            if (slugHandle != null) {
-                Spacer(modifier = Modifier.height(4.dp))
-                Surface(
-                    color = ZulvazaOrange.copy(alpha = 0.1f),
-                    shape = RoundedCornerShape(50),
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(50))
-                        .clickable {
-                            copyToClipboard(context, "Storefront URL", storefrontUrl)
-                            onToast("Copied $storefrontUrl", false)
-                        }
-                        .testTag("copy_store_handle_pill")
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
+            Spacer(modifier = Modifier.height(6.dp))
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.horizontalScroll(rememberScrollState())
+            ) {
+                if (slugHandle != null) {
+                    Surface(
+                        color = ZulvazaOrange.copy(alpha = 0.1f),
+                        shape = RoundedCornerShape(50),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .clickable {
+                                copyToClipboard(context, "Storefront URL", storefrontUrl)
+                                onToast("Copied $storefrontUrl", false)
+                            }
+                            .testTag("copy_store_handle_pill")
                     ) {
-                        Text(
-                            text = "zulvaza.com/shop/$slugHandle",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = ZulvazaOrange,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Icon(
-                            imageVector = Icons.Default.ContentCopy,
-                            contentDescription = "Copy storefront URL",
-                            tint = ZulvazaOrange,
-                            modifier = Modifier.size(13.dp)
-                        )
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "zulvaza.com/shop/$slugHandle",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = ZulvazaOrange,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Icon(
+                                imageVector = Icons.Default.ContentCopy,
+                                contentDescription = "Copy storefront URL",
+                                tint = ZulvazaOrange,
+                                modifier = Modifier.size(13.dp)
+                            )
+                        }
+                    }
+                }
+
+                if (sellerLocationLabel.isNotBlank()) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(50)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.LocationOn,
+                                contentDescription = null,
+                                tint = ZulvazaOrange,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = sellerLocationLabel,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
                     }
                 }
             }
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Stats Row (Studio Tabular Numbers)
+            // Stats Strip
             Card(
                 shape = RoundedCornerShape(20.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -559,54 +715,330 @@ fun StoreProfileScreen(
                 }
             }
 
-            // Store stats card above bio & socials
+            Spacer(modifier = Modifier.height(14.dp))
 
-            if (!store?.bio.isNullOrBlank()) {
-                Spacer(modifier = Modifier.height(14.dp))
-                Text(
-                    text = store.bio,
-                    style = MaterialTheme.typography.bodyLarge
-                )
-            }
-
-            if (activeSocials.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(14.dp))
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    activeSocials.forEach { sp ->
-                        SocialBrandBadge(
-                            platform = sp.platform,
-                            label = SocialPlatform.fromKey(sp.platform).displayName,
-                            onClick = { openExternalUrl(context, sp.url) }
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-            Card(
-                shape = RoundedCornerShape(18.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            // About / Products Segmented Switcher
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text("About Store", style = MaterialTheme.typography.titleMedium)
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = store?.introduction?.takeIf { it.isNotBlank() }
-                            ?: "Tap Edit Store to customize your cover banner, logo, and bio.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    StoreSectionTabPill(
+                        label = "About",
+                        icon = Icons.Default.Info,
+                        selected = selectedSectionTab == 0,
+                        onClick = { selectedSectionTab = 0 },
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("store_tab_about")
+                    )
+                    StoreSectionTabPill(
+                        label = "Products (${products.size})",
+                        icon = Icons.Default.Inventory2,
+                        selected = selectedSectionTab == 1,
+                        onClick = { selectedSectionTab = 1 },
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("store_tab_products")
                     )
                 }
             }
 
+            Spacer(modifier = Modifier.height(14.dp))
+
+            if (selectedSectionTab == 0) {
+                // ================= ABOUT TAB =================
+                Card(
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(
+                            text = "Store Bio",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = store?.bio?.takeIf { it.isNotBlank() }
+                                ?: "Add a crisp store bio so shoppers recognize your brand immediately.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (store?.bio.isNullOrBlank()) {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            }
+                        )
+
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f))
+
+                        Text(
+                            text = "About Store",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = store?.introduction?.takeIf { it.isNotBlank() }
+                                ?: "Tap Edit Store to add your brand story, specialties, and delivery details.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        if (sellerLocationLabel.isNotBlank()) {
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = ZulvazaOrange.copy(alpha = 0.12f),
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = Icons.Default.LocationOn,
+                                            contentDescription = null,
+                                            tint = ZulvazaOrange,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column {
+                                    Text(
+                                        text = "Registered Business Location",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Text(
+                                        text = sellerLocationLabel,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        modifier = Modifier.testTag("store_about_location")
+                                    )
+                                }
+                            }
+                        }
+
+                        if (activeSocials.isNotEmpty()) {
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f))
+                            Text(
+                                text = "Social Channels",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                activeSocials.forEach { sp ->
+                                    SocialBrandBadge(
+                                        platform = sp.platform,
+                                        label = SocialPlatform.fromKey(sp.platform).displayName,
+                                        onClick = { openExternalUrl(context, sp.url) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                // ================= PRODUCTS TAB =================
+                if (products.isEmpty()) {
+                    EmptyStateCard(
+                        icon = Icons.Default.Inventory2,
+                        title = "No Products Yet",
+                        subtitle = "Add your first product from the Add Product tab to showcase it in your store."
+                    )
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        products.forEach { product ->
+                            StoreProductRowCard(
+                                product = product,
+                                imageUrl = product.imagePaths.firstOrNull()?.let(resolveProductImage),
+                                onClick = { onOpenProductDetail(product) }
+                            )
+                        }
+                    }
+                }
+            }
+
             Spacer(modifier = Modifier.height(28.dp))
+        }
+    }
+}
+
+@Composable
+private fun StoreMediaSheetActionRow(
+    icon: ImageVector,
+    label: String,
+    tint: Color,
+    labelColor: Color = MaterialTheme.colorScheme.onSurface,
+    testTag: String,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .defaultMinSize(minHeight = 54.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 12.dp)
+            .testTag(testTag),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Surface(
+            shape = CircleShape,
+            color = tint.copy(alpha = 0.1f),
+            modifier = Modifier.size(38.dp)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(imageVector = icon, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp))
+            }
+        }
+        Spacer(modifier = Modifier.width(14.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = labelColor,
+            modifier = Modifier.weight(1f)
+        )
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun StoreSectionTabPill(
+    label: String,
+    icon: ImageVector,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        color = if (selected) MaterialTheme.colorScheme.surface else Color.Transparent,
+        shadowElevation = if (selected) 2.dp else 0.dp,
+        shape = RoundedCornerShape(12.dp),
+        modifier = modifier
+            .defaultMinSize(minHeight = 44.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (selected) ZulvazaOrange else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+private fun StoreProductRowCard(
+    product: ProductItem,
+    imageUrl: String?,
+    onClick: () -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .clickable(onClick = onClick)
+            .testTag("store_product_card_${product.id}")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            SignedRemoteImage(
+                url = imageUrl,
+                contentDescription = product.name,
+                modifier = Modifier
+                    .size(76.dp)
+                    .clip(RoundedCornerShape(14.dp))
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    ProductStatusBadge(status = product.status)
+                    if (product.category.isNotBlank()) {
+                        Text(
+                            text = product.category,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = product.name,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = Formatters.formatPkr(product.price),
+                        fontFamily = JetBrainsMonoFontFamily,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = ZulvazaOrange,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Stock: ${product.stock}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
         }
     }
 }
@@ -679,7 +1111,7 @@ fun EditStoreSheetContent(
 
         Spacer(modifier = Modifier.height(6.dp))
         Text(
-            text = "Tap your logo or cover banner directly on My Store to preview, crop, change, or delete media.",
+            text = "Tap your logo or cover banner on My Store to preview, take photo, crop, change, or delete.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -712,6 +1144,7 @@ fun EditStoreSheetContent(
                 StoreUsernameField(
                     username = slug,
                     storeName = shopName,
+                    initialSavedUsername = initialStore?.slug.orEmpty(),
                     recheckTrigger = usernameConflictNonce,
                     onUsernameChange = { slug = it },
                     onUserEdited = { usernameManuallyEdited = true },

@@ -190,6 +190,13 @@ fun VerificationScreen(
     var cnicBackPath by remember(verification) { mutableStateOf(initial.cnicBack) }
     var facePhotoPath by remember(verification) { mutableStateOf(initial.facePhoto) }
 
+    var userEditedName by remember(verification) { mutableStateOf(false) }
+    var userEditedCnic by remember(verification) { mutableStateOf(false) }
+    var userEditedDob by remember(verification) { mutableStateOf(false) }
+    var userEditedIssue by remember(verification) { mutableStateOf(false) }
+    var userEditedExpiry by remember(verification) { mutableStateOf(false) }
+    var userEditedGender by remember(verification) { mutableStateOf(false) }
+
     // Apply background OCR extraction results automatically as soon as ready
     LaunchedEffect(cnicOcrState.status, cnicOcrState.extracted) {
         if (cnicOcrState.status == CnicOcrStatus.COMPLETED) {
@@ -197,12 +204,12 @@ fun VerificationScreen(
             if (cnicOcrState.backText.isNotBlank()) backScanOcrText = cnicOcrState.backText
             if (!ocrAppliedForScan) {
                 val ex = cnicOcrState.extracted
-                if (ex.fullName.isNotBlank() && fullName.isBlank()) fullName = ex.fullName
-                if (ex.cnicDigits.length == 13 && cnicDigits.length != 13) cnicDigits = ex.cnicDigits
-                if (ex.dateOfBirth.isNotBlank() && dateOfBirth.isBlank()) dateOfBirth = ex.dateOfBirth
-                if (ex.issueDate.isNotBlank() && issueDate.isBlank()) issueDate = ex.issueDate
-                if (ex.expiryDate.isNotBlank() && expiryDate.isBlank()) expiryDate = ex.expiryDate
-                if (ex.gender.isNotBlank()) gender = ex.gender
+                if (ex.fullName.isNotBlank() && (!userEditedName || fullName.isBlank())) fullName = ex.fullName
+                if (ex.cnicDigits.length == 13 && (!userEditedCnic || cnicDigits.length != 13)) cnicDigits = ex.cnicDigits
+                if (ex.dateOfBirth.isNotBlank() && (!userEditedDob || dateOfBirth.isBlank())) dateOfBirth = ex.dateOfBirth
+                if (ex.issueDate.isNotBlank() && (!userEditedIssue || issueDate.isBlank())) issueDate = ex.issueDate
+                if (ex.expiryDate.isNotBlank() && (!userEditedExpiry || expiryDate.isBlank())) expiryDate = ex.expiryDate
+                if (ex.gender.isNotBlank() && !userEditedGender) gender = ex.gender
                 ocrAppliedForScan = true
             }
         }
@@ -264,6 +271,12 @@ fun VerificationScreen(
                 frontScanOcrText = null
                 backScanOcrText = null
                 ocrAppliedForScan = false
+                userEditedName = false
+                userEditedCnic = false
+                userEditedDob = false
+                userEditedIssue = false
+                userEditedExpiry = false
+                userEditedGender = false
                 scanMismatches = emptyList()
 
                 isUploadingCnic = true
@@ -367,9 +380,18 @@ fun VerificationScreen(
                         if (millis != null) {
                             val formatted = Formatters.formatMillisToIsoDate(millis)
                             when (datePickerTarget) {
-                                "dob" -> dateOfBirth = formatted
-                                "issue" -> issueDate = formatted
-                                else -> expiryDate = formatted
+                                "dob" -> {
+                                    dateOfBirth = formatted
+                                    userEditedDob = true
+                                }
+                                "issue" -> {
+                                    issueDate = formatted
+                                    userEditedIssue = true
+                                }
+                                else -> {
+                                    expiryDate = formatted
+                                    userEditedExpiry = true
+                                }
                             }
                             scanMismatches = emptyList()
                         }
@@ -958,6 +980,7 @@ fun VerificationScreen(
                                 value = fullName,
                                 onValueChange = {
                                     fullName = it
+                                    userEditedName = true
                                     scanMismatches = emptyList()
                                 },
                                 label = { Text("Full Legal Name (as on CNIC)") },
@@ -977,6 +1000,7 @@ fun VerificationScreen(
                                 value = cnicDigits,
                                 onValueChange = { raw ->
                                     cnicDigits = Formatters.sanitizeCnicDigits(raw)
+                                    userEditedCnic = true
                                     scanMismatches = emptyList()
                                 },
                                 label = { Text("CNIC Number") },
@@ -1076,6 +1100,7 @@ fun VerificationScreen(
                                             text = { Text(label) },
                                             onClick = {
                                                 gender = key
+                                                userEditedGender = true
                                                 genderExpanded = false
                                             }
                                         )
@@ -1562,6 +1587,7 @@ fun VerificationScreen(
                             StoreUsernameField(
                                 username = shopSlug,
                                 storeName = shopName,
+                                initialSavedUsername = store?.slug.orEmpty(),
                                 recheckTrigger = usernameConflictNonce,
                                 onUsernameChange = { shopSlug = it },
                                 onUserEdited = { usernameManuallyEdited = true },
@@ -1749,10 +1775,11 @@ private fun DateSelectorField(
             Spacer(modifier = Modifier.width(8.dp))
             Column {
                 Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                val formattedDate = Formatters.formatIsoToDmyDisplay(value)
                 Text(
-                    text = value.ifBlank { "YYYY-MM-DD" },
+                    text = formattedDate.ifBlank { "DD/MM/YYYY" },
                     style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = if (value.isNotBlank()) FontWeight.SemiBold else FontWeight.Normal,
+                    fontWeight = if (formattedDate.isNotBlank()) FontWeight.SemiBold else FontWeight.Normal,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )

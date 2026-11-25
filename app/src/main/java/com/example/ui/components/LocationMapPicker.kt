@@ -67,6 +67,11 @@ fun LocationGpsSection(
     val fusedClient = remember { LocationServices.getFusedLocationProviderClient(context) }
 
     fun fetchCurrentGps() {
+        if (!LocationHelper.isLocationServiceEnabled(context)) {
+            locating = false
+            onError("Device location (GPS) is turned off. Please enable Location in Settings and try again.")
+            return
+        }
         locating = true
         fusedClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
             .addOnSuccessListener { location ->

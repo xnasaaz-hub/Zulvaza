@@ -334,7 +334,7 @@ fun SignUpScreen(
                 // 6-digit OTP verification step
                 OtpVerifyCard(
                     title = "Verify Your Email",
-                    subtitle = "Enter the 6-digit verification code sent via support.zulvaza.com to $otpPendingEmail. Verifies automatically once all 6 digits are entered.",
+                    subtitle = "Enter the 6-digit verification code sent to $otpPendingEmail. Check your inbox or spam folder — verifies automatically once all 6 digits are entered.",
                     code = otpCode,
                     resendSeconds = resendSeconds,
                     isBusy = isBusy,
