@@ -186,28 +186,12 @@ fun ImageCropDialog(
                             Icon(Icons.Default.Close, contentDescription = "Close cropper", tint = Color.White)
                         }
 
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    Icons.Default.Crop,
-                                    contentDescription = null,
-                                    tint = ZulvazaOrange,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = title,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                            Text(
-                                text = if (isCircularLogo) "1:1 Square • 800×800px" else "16:9 Cover Banner • 1600×900px",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color.White.copy(alpha = 0.65f)
-                            )
-                        }
+                        Text(
+                            text = title,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold
+                        )
 
                         IconButton(
                             onClick = {
@@ -234,7 +218,7 @@ fun ImageCropDialog(
                         .pointerInput(sourceBitmap, viewportSize) {
                             detectTransformGestures { _, pan, gestureZoom, _ ->
                                 val bmp = sourceBitmap ?: return@detectTransformGestures
-                                val nextZoom = (zoom * gestureZoom).coerceIn(1f, 4f)
+                                val nextZoom = (zoom * gestureZoom).coerceIn(1f, 12f)
                                 val (clampedX, clampedY) = clampOffset(
                                     offsetX + pan.x,
                                     offsetY + pan.y,
@@ -368,41 +352,6 @@ fun ImageCropDialog(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    Icons.Default.ZoomIn,
-                                    contentDescription = null,
-                                    tint = Color.White.copy(alpha = 0.72f),
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = "Pinch, drag, or double-tap to zoom & position",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = Color.White.copy(alpha = 0.78f)
-                                )
-                            }
-                            Surface(
-                                color = ZulvazaOrange.copy(alpha = 0.16f),
-                                shape = RoundedCornerShape(50)
-                            ) {
-                                Text(
-                                    text = String.format(Locale.US, "%.1fx", zoom),
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = ZulvazaOrange,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                                )
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(14.dp))
-
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(12.dp)

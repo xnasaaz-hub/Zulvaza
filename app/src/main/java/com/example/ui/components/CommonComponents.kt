@@ -5,6 +5,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -13,7 +14,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -24,19 +25,23 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.automirrored.filled.Chat
-import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
@@ -44,10 +49,12 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Storefront
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material.icons.filled.Work
 import androidx.compose.material3.Button
@@ -56,20 +63,20 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
@@ -85,9 +92,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.example.R
 import com.example.data.model.ProductItem
 import com.example.data.model.ProductStatus
+import com.example.data.model.SellerStore
 import com.example.data.model.SocialPlatform
 import com.example.data.model.VerificationStatus
 import com.example.ui.theme.ErrorRed
@@ -346,6 +356,7 @@ fun OtpCodeBoxes(
     onCodeChange: (String) -> Unit,
     onComplete: (String) -> Unit,
     enabled: Boolean = true,
+    isError: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     Box(modifier = modifier.fillMaxWidth()) {
@@ -375,13 +386,15 @@ fun OtpCodeBoxes(
                         val isActive = enabled && index == code.length.coerceAtMost(5) && code.length < 6
                         val isFilled = char.isNotEmpty()
                         val boxBg = when {
-                            isFilled -> ZulvazaOrange.copy(alpha = 0.08f)
-                            isActive -> ZulvazaOrange.copy(alpha = 0.04f)
-                            else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                            isError -> ErrorRedSoft
+                            isFilled -> ZulvazaOrange.copy(alpha = 0.09f)
+                            isActive -> ZulvazaOrange.copy(alpha = 0.05f)
+                            else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
                         }
                         val borderColor = when {
+                            isError -> ErrorRed
                             isActive -> ZulvazaOrange
-                            isFilled -> ZulvazaNavy.copy(alpha = 0.72f)
+                            isFilled -> ZulvazaNavy.copy(alpha = 0.78f)
                             else -> MaterialTheme.colorScheme.outline.copy(alpha = 0.75f)
                         }
                         Surface(
@@ -390,9 +403,9 @@ fun OtpCodeBoxes(
                             shadowElevation = if (isActive || isFilled) 2.dp else 0.dp,
                             modifier = Modifier
                                 .weight(1f)
-                                .height(60.dp)
+                                .height(58.dp)
                                 .border(
-                                    width = if (isActive) 2.dp else 1.25.dp,
+                                    width = if (isActive || isError) 2.dp else 1.25.dp,
                                     color = borderColor,
                                     shape = RoundedCornerShape(14.dp)
                                 )
@@ -403,7 +416,7 @@ fun OtpCodeBoxes(
                                         text = char,
                                         style = MaterialTheme.typography.headlineSmall,
                                         fontWeight = FontWeight.ExtraBold,
-                                        color = ZulvazaNavy
+                                        color = if (isError) ErrorRed else ZulvazaNavy
                                     )
                                 } else if (isActive) {
                                     Box(
@@ -429,6 +442,464 @@ fun OtpCodeBoxes(
                 }
             }
         )
+    }
+}
+
+// ======================= 5-DIGIT SECURITY PIN SYSTEM =======================
+
+@Composable
+fun PinDotsRow(
+    enteredLength: Int,
+    pinLength: Int = 5,
+    isError: Boolean = false,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        repeat(pinLength) { idx ->
+            val filled = idx < enteredLength
+            val fillCol = when {
+                isError -> ErrorRed
+                filled -> ZulvazaOrange
+                else -> Color.Transparent
+            }
+            val borderCol = when {
+                isError -> ErrorRed
+                filled -> ZulvazaOrange
+                else -> MaterialTheme.colorScheme.outline
+            }
+            Box(
+                modifier = Modifier
+                    .size(18.dp)
+                    .clip(CircleShape)
+                    .background(fillCol)
+                    .border(2.dp, borderCol, CircleShape)
+            )
+        }
+    }
+}
+
+@Composable
+fun ZulvazaPinKeypad(
+    onDigit: (Char) -> Unit,
+    onBackspace: () -> Unit,
+    enabled: Boolean = true,
+    modifier: Modifier = Modifier
+) {
+    val rows = listOf(
+        listOf('1', '2', '3'),
+        listOf('4', '5', '6'),
+        listOf('7', '8', '9')
+    )
+    Column(
+        modifier = modifier.widthIn(max = 310.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        rows.forEach { rowDigits ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterHorizontally)
+            ) {
+                rowDigits.forEach { digit ->
+                    PinKeyTile(
+                        label = digit.toString(),
+                        enabled = enabled,
+                        onClick = { onDigit(digit) },
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("pin_key_$digit")
+                    )
+                }
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterHorizontally)
+        ) {
+            Spacer(modifier = Modifier.weight(1f))
+            PinKeyTile(
+                label = "0",
+                enabled = enabled,
+                onClick = { onDigit('0') },
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("pin_key_0")
+            )
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)),
+                modifier = Modifier
+                    .weight(1f)
+                    .height(60.dp)
+                    .clip(RoundedCornerShape(18.dp))
+                    .clickable(enabled = enabled, onClick = onBackspace)
+                    .testTag("pin_key_backspace")
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.Backspace,
+                        contentDescription = "Backspace",
+                        tint = ZulvazaNavy,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PinKeyTile(
+    label: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        shadowElevation = 2.dp,
+        modifier = modifier
+            .height(60.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+    }
+}
+
+@Composable
+fun AppLockPinOverlay(
+    onVerifyPin: (String, (Boolean) -> Unit) -> Unit,
+    onSignOutFallback: () -> Unit
+) {
+    var pin by remember { mutableStateOf("") }
+    var isError by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.SpaceBetween
+    ) {
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Surface(
+                shape = RoundedCornerShape(22.dp),
+                color = ZulvazaOrange.copy(alpha = 0.12f),
+                border = BorderStroke(1.dp, ZulvazaOrange.copy(alpha = 0.3f)),
+                modifier = Modifier.size(72.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Default.Lock,
+                        contentDescription = "App locked",
+                        tint = ZulvazaOrange,
+                        modifier = Modifier.size(34.dp)
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = "ZULVAZA Security PIN",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Enter your 5-digit PIN to unlock Seller Center",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(22.dp))
+            PinDotsRow(enteredLength = pin.length, isError = isError)
+            Spacer(modifier = Modifier.height(10.dp))
+            if (isError) {
+                Text(
+                    text = "Incorrect PIN — try again",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = ErrorRed,
+                    fontWeight = FontWeight.SemiBold
+                )
+            } else {
+                Spacer(modifier = Modifier.height(16.dp))
+            }
+        }
+
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            ZulvazaPinKeypad(
+                onDigit = { digit ->
+                    if (pin.length < 5) {
+                        isError = false
+                        val next = pin + digit
+                        pin = next
+                        if (next.length == 5) {
+                            onVerifyPin(next) { ok ->
+                                if (!ok) {
+                                    isError = true
+                                    pin = ""
+                                }
+                            }
+                        }
+                    }
+                },
+                onBackspace = {
+                    if (pin.isNotEmpty()) {
+                        isError = false
+                        pin = pin.dropLast(1)
+                    }
+                }
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            TextButton(onClick = onSignOutFallback) {
+                Text("Switch Account / Log Out")
+            }
+        }
+    }
+}
+
+@Composable
+fun PinSetupModal(
+    title: String = "Set 5-Digit Security PIN",
+    subtitle: String = "Protect your seller account when opening ZULVAZA Seller Center.",
+    allowSkip: Boolean = true,
+    onCompleted: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    BackHandler { onDismiss() }
+    var firstPin by remember { mutableStateOf("") }
+    var confirmPin by remember { mutableStateOf("") }
+    var stepConfirm by remember { mutableStateOf(false) }
+    var errorMsg by remember { mutableStateOf<String?>(null) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            color = MaterialTheme.colorScheme.background,
+            shape = RoundedCornerShape(28.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 22.dp, vertical = 22.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = ZulvazaOrange.copy(alpha = 0.14f),
+                    modifier = Modifier.size(56.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(Icons.Default.Lock, contentDescription = null, tint = ZulvazaOrange, modifier = Modifier.size(28.dp))
+                    }
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = if (stepConfirm) "Confirm 5-Digit PIN" else title,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = if (stepConfirm) "Re-enter the same 5-digit PIN to confirm" else subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(modifier = Modifier.height(18.dp))
+
+                val activeLen = if (stepConfirm) confirmPin.length else firstPin.length
+                PinDotsRow(enteredLength = activeLen, isError = errorMsg != null)
+
+                Spacer(modifier = Modifier.height(10.dp))
+                if (errorMsg != null) {
+                    Text(
+                        text = errorMsg!!,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = ErrorRed,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                } else {
+                    Spacer(modifier = Modifier.height(16.dp))
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+                ZulvazaPinKeypad(
+                    onDigit = { digit ->
+                        errorMsg = null
+                        if (!stepConfirm) {
+                            if (firstPin.length < 5) {
+                                firstPin += digit
+                                if (firstPin.length == 5) {
+                                    stepConfirm = true
+                                    confirmPin = ""
+                                }
+                            }
+                        } else {
+                            if (confirmPin.length < 5) {
+                                confirmPin += digit
+                                if (confirmPin.length == 5) {
+                                    if (confirmPin == firstPin) {
+                                        onCompleted(firstPin)
+                                    } else {
+                                        errorMsg = "PINs did not match. Enter PIN again."
+                                        firstPin = ""
+                                        confirmPin = ""
+                                        stepConfirm = false
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    onBackspace = {
+                        errorMsg = null
+                        if (stepConfirm) {
+                            if (confirmPin.isNotEmpty()) confirmPin = confirmPin.dropLast(1)
+                        } else {
+                            if (firstPin.isNotEmpty()) firstPin = firstPin.dropLast(1)
+                        }
+                    }
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    if (stepConfirm) {
+                        TextButton(onClick = {
+                            stepConfirm = false
+                            firstPin = ""
+                            confirmPin = ""
+                            errorMsg = null
+                        }) {
+                            Text("Start Over")
+                        }
+                    } else {
+                        Spacer(modifier = Modifier.width(8.dp))
+                    }
+                    TextButton(onClick = onDismiss) {
+                        Text(if (allowSkip) "Not Now" else "Cancel")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun VerifyCurrentPinModal(
+    title: String,
+    subtitle: String,
+    onVerifyPin: (String, (Boolean) -> Unit) -> Unit,
+    onDismiss: () -> Unit
+) {
+    BackHandler { onDismiss() }
+    var pin by remember { mutableStateOf("") }
+    var isError by remember { mutableStateOf(false) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            color = MaterialTheme.colorScheme.background,
+            shape = RoundedCornerShape(28.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 22.dp, vertical = 22.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = ZulvazaNavy.copy(alpha = 0.12f),
+                    modifier = Modifier.size(54.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(Icons.Default.Lock, contentDescription = null, tint = ZulvazaNavy, modifier = Modifier.size(26.dp))
+                    }
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(modifier = Modifier.height(18.dp))
+                PinDotsRow(enteredLength = pin.length, isError = isError)
+                Spacer(modifier = Modifier.height(10.dp))
+                if (isError) {
+                    Text(
+                        text = "Incorrect PIN — try again",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = ErrorRed,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                } else {
+                    Spacer(modifier = Modifier.height(16.dp))
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                ZulvazaPinKeypad(
+                    onDigit = { digit ->
+                        if (pin.length < 5) {
+                            isError = false
+                            val next = pin + digit
+                            pin = next
+                            if (next.length == 5) {
+                                onVerifyPin(next) { ok ->
+                                    if (!ok) {
+                                        isError = true
+                                        pin = ""
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    onBackspace = {
+                        if (pin.isNotEmpty()) {
+                            isError = false
+                            pin = pin.dropLast(1)
+                        }
+                    }
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                TextButton(onClick = onDismiss) {
+                    Text("Cancel")
+                }
+            }
+        }
     }
 }
 
@@ -477,11 +948,20 @@ fun SocialBrandBadge(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val (color, glyph, _) = socialPlatformStyle(platform)
+    val sp = SocialPlatform.fromKey(platform)
+    val (color, glyph, vecIcon) = socialPlatformStyle(platform)
+    val svgRes = when (sp) {
+        SocialPlatform.FACEBOOK -> R.drawable.ic_social_facebook
+        SocialPlatform.INSTAGRAM -> R.drawable.ic_social_instagram
+        SocialPlatform.WHATSAPP -> R.drawable.ic_whatsapp
+        SocialPlatform.X -> R.drawable.ic_social_x
+        else -> null
+    }
     Surface(
         color = color.copy(alpha = 0.12f),
         shape = RoundedCornerShape(14.dp),
         modifier = modifier
+            .clip(RoundedCornerShape(14.dp))
             .clickable(onClick = onClick)
     ) {
         Row(
@@ -495,12 +975,32 @@ fun SocialBrandBadge(
                     .background(color),
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = glyph,
-                    color = Color.White,
-                    fontSize = if (glyph.length > 2) 9.sp else 12.sp,
-                    fontWeight = FontWeight.ExtraBold
-                )
+                when {
+                    svgRes == R.drawable.ic_whatsapp -> {
+                        Icon(
+                            painter = painterResource(id = svgRes),
+                            contentDescription = sp.displayName,
+                            tint = Color.Unspecified,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                    svgRes != null -> {
+                        Icon(
+                            painter = painterResource(id = svgRes),
+                            contentDescription = sp.displayName,
+                            tint = Color.White,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                    else -> {
+                        Icon(
+                            imageVector = vecIcon,
+                            contentDescription = glyph,
+                            tint = Color.White,
+                            modifier = Modifier.size(15.dp)
+                        )
+                    }
+                }
             }
             if (!label.isNullOrBlank()) {
                 Spacer(modifier = Modifier.width(8.dp))
@@ -528,26 +1028,68 @@ fun ShareProductBottomSheet(
     onDismiss: () -> Unit,
     onCopied: (String) -> Unit
 ) {
-    val context = LocalContext.current
     val shareUrl = remember(product) {
         Formatters.buildProductShareUrl(product.name, product.productCode)
     }
     val shareText = "Check out ${product.name} (${Formatters.formatPkr(product.price)}) on ZULVAZA: $shareUrl"
+    ZulvazaShareSheet(
+        sheetTitle = "Share Product",
+        subjectTitle = product.name,
+        shareUrl = shareUrl,
+        shareText = shareText,
+        onDismiss = onDismiss,
+        onCopied = onCopied
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ShareStoreBottomSheet(
+    store: SellerStore?,
+    onDismiss: () -> Unit,
+    onCopied: (String) -> Unit
+) {
+    val slugHandle = store?.slug?.takeIf { it.isNotBlank() }
+    val storeName = store?.shopName?.takeIf { it.isNotBlank() } ?: "ZULVAZA Storefront"
+    val shareUrl = if (slugHandle != null) "https://zulvaza.com/shop/$slugHandle" else "https://zulvaza.com"
+    val shareText = "Shop $storeName on ZULVAZA: $shareUrl"
+    ZulvazaShareSheet(
+        sheetTitle = "Share Store",
+        subjectTitle = storeName,
+        shareUrl = shareUrl,
+        shareText = shareText,
+        onDismiss = onDismiss,
+        onCopied = onCopied
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ZulvazaShareSheet(
+    sheetTitle: String,
+    subjectTitle: String,
+    shareUrl: String,
+    shareText: String,
+    onDismiss: () -> Unit,
+    onCopied: (String) -> Unit
+) {
+    val context = LocalContext.current
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+        shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .navigationBarsPadding()
                 .padding(horizontal = 20.dp)
                 .padding(bottom = 28.dp)
         ) {
-            Text("Share Product", style = MaterialTheme.typography.headlineSmall)
+            Text(sheetTitle, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = product.name,
+                text = subjectTitle,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -577,7 +1119,7 @@ fun ShareProductBottomSheet(
                     Spacer(modifier = Modifier.width(8.dp))
                     Button(
                         onClick = {
-                            copyToClipboard(context, "Product Link", shareUrl)
+                            copyToClipboard(context, sheetTitle, shareUrl)
                             onCopied("Link copied to clipboard")
                         },
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
@@ -595,41 +1137,50 @@ fun ShareProductBottomSheet(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                ShareChannelTile(
+                ShareChannelSvgTile(
                     title = "WhatsApp",
-                    glyph = "WA",
+                    iconRes = R.drawable.ic_whatsapp,
                     color = SocialWhatsApp,
+                    tintWhite = false,
                     onClick = {
                         val enc = URLEncoder.encode(shareText, "UTF-8")
                         openExternalUrl(context, "https://wa.me/?text=$enc")
                     }
                 )
-                ShareChannelTile(
+                ShareChannelSvgTile(
                     title = "Facebook",
-                    glyph = "f",
+                    iconRes = R.drawable.ic_social_facebook,
                     color = SocialFacebook,
+                    tintWhite = true,
                     onClick = {
                         val enc = URLEncoder.encode(shareUrl, "UTF-8")
                         openExternalUrl(context, "https://www.facebook.com/sharer/sharer.php?u=$enc")
                     }
                 )
-                ShareChannelTile(
+                ShareChannelSvgTile(
+                    title = "Instagram",
+                    iconRes = R.drawable.ic_social_instagram,
+                    color = SocialInstagram,
+                    tintWhite = true,
+                    onClick = {
+                        copyToClipboard(context, sheetTitle, shareText)
+                        onCopied("Link copied — share in Instagram")
+                        val igIntent = context.packageManager.getLaunchIntentForPackage("com.instagram.android")
+                        if (igIntent != null) {
+                            runCatching { context.startActivity(igIntent) }
+                        } else {
+                            openExternalUrl(context, "https://www.instagram.com/")
+                        }
+                    }
+                )
+                ShareChannelSvgTile(
                     title = "X",
-                    glyph = "X",
+                    iconRes = R.drawable.ic_social_x,
                     color = SocialX,
+                    tintWhite = true,
                     onClick = {
                         val encText = URLEncoder.encode(shareText, "UTF-8")
                         openExternalUrl(context, "https://twitter.com/intent/tweet?text=$encText")
-                    }
-                )
-                ShareChannelTile(
-                    title = "Telegram",
-                    glyph = "TG",
-                    color = SocialTelegram,
-                    onClick = {
-                        val encUrl = URLEncoder.encode(shareUrl, "UTF-8")
-                        val encName = URLEncoder.encode(product.name, "UTF-8")
-                        openExternalUrl(context, "https://t.me/share/url?url=$encUrl&text=$encName")
                     }
                 )
             }
@@ -639,7 +1190,7 @@ fun ShareProductBottomSheet(
                 onClick = {
                     val intent = Intent(Intent.ACTION_SEND).apply {
                         type = "text/plain"
-                        putExtra(Intent.EXTRA_SUBJECT, product.name)
+                        putExtra(Intent.EXTRA_SUBJECT, subjectTitle)
                         putExtra(Intent.EXTRA_TEXT, shareText)
                     }
                     context.startActivity(Intent.createChooser(intent, "Share via"))
@@ -651,17 +1202,18 @@ fun ShareProductBottomSheet(
             ) {
                 Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("More sharing apps")
+                Text("More sharing options")
             }
         }
     }
 }
 
 @Composable
-private fun ShareChannelTile(
+private fun ShareChannelSvgTile(
     title: String,
-    glyph: String,
+    iconRes: Int,
     color: Color,
+    tintWhite: Boolean,
     onClick: () -> Unit
 ) {
     Column(
@@ -673,15 +1225,20 @@ private fun ShareChannelTile(
     ) {
         Box(
             modifier = Modifier
-                .size(50.dp)
+                .size(52.dp)
                 .clip(CircleShape)
                 .background(color),
             contentAlignment = Alignment.Center
         ) {
-            Text(glyph, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            Icon(
+                painter = painterResource(id = iconRes),
+                contentDescription = title,
+                tint = if (tintWhite) Color.White else Color.Unspecified,
+                modifier = Modifier.size(if (tintWhite) 24.dp else 34.dp)
+            )
         }
         Spacer(modifier = Modifier.height(6.dp))
-        Text(title, style = MaterialTheme.typography.labelSmall)
+        Text(title, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Medium)
     }
 }
 

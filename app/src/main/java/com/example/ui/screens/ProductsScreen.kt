@@ -37,10 +37,10 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Drafts
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.ViewAgenda
-import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -95,7 +95,6 @@ private enum class CatalogSort(val label: String) {
     NEWEST("Newest"),
     PRICE_LOW("Price: Low → High"),
     PRICE_HIGH("Price: High → Low"),
-    TOP_SALES("Best Selling"),
     LOW_STOCK("Low Stock First")
 }
 
@@ -243,7 +242,6 @@ fun ProductsScreen(
             CatalogSort.NEWEST -> base
             CatalogSort.PRICE_LOW -> base.sortedBy { it.price }
             CatalogSort.PRICE_HIGH -> base.sortedByDescending { it.price }
-            CatalogSort.TOP_SALES -> base.sortedByDescending { it.sales }
             CatalogSort.LOW_STOCK -> base.sortedBy { it.stock }
         }
     }
@@ -531,6 +529,8 @@ private fun ProductListCard(
     onShare: () -> Unit,
     onCopyId: () -> Unit
 ) {
+    var showMenu by remember { mutableStateOf(false) }
+
     Card(
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -556,29 +556,85 @@ private fun ProductListCard(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        ProductStatusBadge(status = product.status)
-                        Surface(
-                            color = MaterialTheme.colorScheme.surfaceVariant,
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable(onClick = onCopyId)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                            ProductStatusBadge(status = product.status)
+                            Surface(
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable(onClick = onCopyId)
                             ) {
-                                Text(
-                                    text = product.productCode.ifBlank { "—" },
-                                    fontFamily = JetBrainsMonoFontFamily,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = product.productCode.ifBlank { "—" },
+                                        fontFamily = JetBrainsMonoFontFamily,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Icon(
+                                        imageVector = Icons.Default.ContentCopy,
+                                        contentDescription = "Copy 10-digit ID",
+                                        modifier = Modifier.size(11.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        Box {
+                            IconButton(
+                                onClick = { showMenu = true },
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .testTag("product_more_menu_${product.id}")
+                            ) {
                                 Icon(
-                                    imageVector = Icons.Default.ContentCopy,
-                                    contentDescription = "Copy 10-digit ID",
-                                    modifier = Modifier.size(12.dp)
+                                    imageVector = Icons.Default.MoreVert,
+                                    contentDescription = "More product actions"
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = showMenu,
+                                onDismissRequest = { showMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Edit Product") },
+                                    leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
+                                    onClick = {
+                                        showMenu = false
+                                        onEdit()
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Share Product") },
+                                    leadingIcon = { Icon(Icons.Default.Share, contentDescription = null, tint = ZulvazaOrange) },
+                                    onClick = {
+                                        showMenu = false
+                                        onShare()
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Copy ID") },
+                                    leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null) },
+                                    onClick = {
+                                        showMenu = false
+                                        onCopyId()
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Delete", color = ErrorRed) },
+                                    leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = ErrorRed) },
+                                    onClick = {
+                                        showMenu = false
+                                        onDelete()
+                                    }
                                 )
                             }
                         }
@@ -590,26 +646,19 @@ private fun ProductListCard(
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column {
-                            Text(
-                                text = Formatters.formatPkr(product.price),
-                                fontFamily = JetBrainsMonoFontFamily,
-                                style = MaterialTheme.typography.titleSmall,
-                                color = ZulvazaOrange,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = "Sales: ${product.sales}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                        Text(
+                            text = Formatters.formatPkr(product.price),
+                            fontFamily = JetBrainsMonoFontFamily,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = ZulvazaOrange,
+                            fontWeight = FontWeight.Bold
+                        )
 
                         // Inline Quick Stock Stepper
                         Surface(
@@ -665,43 +714,6 @@ private fun ProductListCard(
                     )
                 }
             }
-
-            Spacer(modifier = Modifier.height(10.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                OutlinedButton(
-                    onClick = onView,
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .weight(1f)
-                        .defaultMinSize(minHeight = 48.dp)
-                ) {
-                    Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("View", style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-                OutlinedButton(
-                    onClick = onEdit,
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .weight(1f)
-                        .defaultMinSize(minHeight = 48.dp)
-                ) {
-                    Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Edit", style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-                IconButton(onClick = onShare) {
-                    Icon(Icons.Default.Share, contentDescription = "Share product", tint = ZulvazaOrange)
-                }
-                IconButton(onClick = onDelete) {
-                    Icon(Icons.Default.Delete, contentDescription = "Delete product", tint = ErrorRed)
-                }
-            }
         }
     }
 }
@@ -753,37 +765,7 @@ fun ProductDetailView(
 
         ProductImageCarousel(imageUrls = imageUrls)
 
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            ProductStatusBadge(status = product.status)
-            Surface(
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                shape = RoundedCornerShape(10.dp),
-                modifier = Modifier
-                    .clip(RoundedCornerShape(10.dp))
-                    .clickable { onCopyCode(product.productCode) }
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        "ID: ${product.productCode}",
-                        fontFamily = JetBrainsMonoFontFamily,
-                        style = MaterialTheme.typography.labelMedium
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Icon(Icons.Default.ContentCopy, contentDescription = "Copy ID", modifier = Modifier.size(14.dp))
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(14.dp))
         Text(product.name, style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(6.dp))
         Text(
@@ -813,7 +795,7 @@ fun ProductDetailView(
                 }
             }
             Text(
-                text = "Stock: ${product.stock}  •  Sales: ${product.sales}",
+                text = "Stock: ${product.stock}",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

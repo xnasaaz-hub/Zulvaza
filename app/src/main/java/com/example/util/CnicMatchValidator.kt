@@ -43,8 +43,21 @@ object CnicMatchValidator {
     private val DATE_DMY_REGEX = Regex("\\b(\\d{2})\\s*[./-]\\s*(\\d{2})\\s*[./-]\\s*(\\d{4})\\b")
     private val DATE_YMD_REGEX = Regex("\\b(\\d{4})\\s*[./-]\\s*(\\d{2})\\s*[./-]\\s*(\\d{2})\\b")
 
+    fun normalizeUrduDigits(raw: String): String {
+        if (raw.isEmpty()) return raw
+        val sb = StringBuilder(raw.length)
+        for (ch in raw) {
+            when (ch) {
+                in '\u06F0'..'\u06F9' -> sb.append(('0'.code + (ch.code - '\u06F0'.code)).toChar())
+                in '\u0660'..'\u0669' -> sb.append(('0'.code + (ch.code - '\u0660'.code)).toChar())
+                else -> sb.append(ch)
+            }
+        }
+        return sb.toString()
+    }
+
     fun extractCnicDigits(rawText: String): String? {
-        val cleaned = rawText
+        val cleaned = normalizeUrduDigits(rawText)
             .replace('O', '0')
             .replace('o', '0')
         val directMatch = CNIC_REGEX.find(cleaned)
@@ -56,7 +69,7 @@ object CnicMatchValidator {
     }
 
     fun extractAllCnicDigits(rawText: String): List<String> {
-        val cleaned = rawText
+        val cleaned = normalizeUrduDigits(rawText)
             .replace('O', '0')
             .replace('o', '0')
         return CNIC_REGEX.findAll(cleaned)
@@ -66,8 +79,9 @@ object CnicMatchValidator {
     }
 
     fun extractIsoDates(rawText: String): List<String> {
+        val normalized = normalizeUrduDigits(rawText)
         val found = linkedSetOf<String>()
-        DATE_DMY_REGEX.findAll(rawText).forEach { m ->
+        DATE_DMY_REGEX.findAll(normalized).forEach { m ->
             val day = m.groupValues[1].toIntOrNull() ?: return@forEach
             val month = m.groupValues[2].toIntOrNull() ?: return@forEach
             val year = m.groupValues[3].toIntOrNull() ?: return@forEach
@@ -75,7 +89,7 @@ object CnicMatchValidator {
                 found += String.format(Locale.US, "%04d-%02d-%02d", year, month, day)
             }
         }
-        DATE_YMD_REGEX.findAll(rawText).forEach { m ->
+        DATE_YMD_REGEX.findAll(normalized).forEach { m ->
             val year = m.groupValues[1].toIntOrNull() ?: return@forEach
             val month = m.groupValues[2].toIntOrNull() ?: return@forEach
             val day = m.groupValues[3].toIntOrNull() ?: return@forEach
@@ -244,6 +258,34 @@ object CnicMatchValidator {
         } else {
             val backMatches = tokens.count { it in BACK_KEYWORDS }
             lineCount >= 2 && (hasCnicNumber || backMatches >= 1 || dates.isNotEmpty())
+        }
+    }
+
+    /**
+     * Returns true when OCR strongly indicates the user is holding up the opposite side of the CNIC
+     * (e.g., Back side shown during Front scan or Front side shown during Back scan).
+     */
+    fun isWrongCnicSide(expectedSide: String, rawText: String, hasFaceDetected: Boolean): Boolean {
+        val upper = rawText.uppercase(Locale.US)
+        val tokens = upper.split(Regex("[^A-Z0-9]+")).filter { it.length >= 3 }.toSet()
+        return if (expectedSide.equals("Front", ignoreCase = true)) {
+            val hasBackCues = tokens.contains("REGISTRAR") ||
+                tokens.contains("ADDRESS") ||
+                tokens.contains("CURRENT") ||
+                tokens.contains("PERMANENT")
+            val hasFrontIdentityCues = tokens.contains("NAME") ||
+                tokens.contains("FATHER") ||
+                tokens.contains("HUSBAND") ||
+                tokens.contains("BIRTH")
+            hasBackCues && !hasFrontIdentityCues && !hasFaceDetected
+        } else {
+            val hasFrontCues = (tokens.contains("FATHER") || tokens.contains("HUSBAND") || tokens.contains("BIRTH")) &&
+                hasFaceDetected
+            val hasBackCues = tokens.contains("ADDRESS") ||
+                tokens.contains("REGISTRAR") ||
+                tokens.contains("CURRENT") ||
+                tokens.contains("PERMANENT")
+            hasFrontCues && !hasBackCues
         }
     }
 

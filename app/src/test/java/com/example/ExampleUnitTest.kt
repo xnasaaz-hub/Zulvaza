@@ -222,4 +222,45 @@ class ExampleUnitTest {
         assertEquals("5440012345673", extracted.cnicDigits)
         assertEquals("1994-11-02", extracted.dateOfBirth)
     }
+
+    @Test
+    fun cnicUrduDigitsNormalizationAndWrongSideDetection_workCorrectly() {
+        val urduCnic = "۵۴۴۰۰-۱۲۳۴۵۶۷-۳"
+        assertEquals("54400-1234567-3", CnicMatchValidator.normalizeUrduDigits(urduCnic))
+        assertEquals("5440012345673", CnicMatchValidator.extractCnicDigits(urduCnic))
+
+        // Back side scanned while Front is expected -> detects wrong side
+        assertTrue(
+            CnicMatchValidator.isWrongCnicSide(
+                expectedSide = "Front",
+                rawText = "Current Address Quetta Permanent Address Balochistan Registrar General of Pakistan",
+                hasFaceDetected = false
+            )
+        )
+        // Front side scanned while Back is expected -> detects wrong side
+        assertTrue(
+            CnicMatchValidator.isWrongCnicSide(
+                expectedSide = "Back",
+                rawText = "ISLAMIC REPUBLIC OF PAKISTAN National Identity Card Father Name Tariq Date of Birth",
+                hasFaceDetected = true
+            )
+        )
+        // Matching side -> does not trigger flip prompt
+        assertFalse(
+            CnicMatchValidator.isWrongCnicSide(
+                expectedSide = "Front",
+                rawText = "ISLAMIC REPUBLIC OF PAKISTAN National Identity Card Name Ali Raza Date of Birth",
+                hasFaceDetected = true
+            )
+        )
+    }
+
+    @Test
+    fun pakistanPostalCodeFallbackLookup_resolvesMajorCities() {
+        assertEquals("87300", com.example.util.LocationHelper.lookupPakistanPostalCode("Quetta", "Balochistan", "Sariab Road"))
+        assertEquals("54000", com.example.util.LocationHelper.lookupPakistanPostalCode("Lahore", "Punjab", "Gulberg III"))
+        assertEquals("74200", com.example.util.LocationHelper.lookupPakistanPostalCode("Karachi", "Sindh", "Clifton"))
+        assertEquals("44000", com.example.util.LocationHelper.lookupPakistanPostalCode("Islamabad", "ICT", "F-7"))
+        assertEquals("", com.example.util.LocationHelper.lookupPakistanPostalCode("UnknownCityXYZ", "", ""))
+    }
 }

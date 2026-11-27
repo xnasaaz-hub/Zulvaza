@@ -5,7 +5,6 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
-import android.speech.tts.TextToSpeech
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -19,11 +18,7 @@ import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -33,14 +28,12 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
@@ -48,24 +41,16 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
-import androidx.compose.material.icons.filled.ArrowDownward
-import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.CameraAlt
-import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.VolumeOff
-import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
@@ -75,13 +60,11 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -99,35 +82,21 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.example.ui.theme.ErrorRed
 import com.example.ui.theme.SuccessGreen
 import com.example.ui.theme.ZulvazaOrange
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetectorOptions
-import kotlinx.coroutines.delay
 import java.io.ByteArrayOutputStream
-import java.util.Locale
 import java.util.concurrent.Executors
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
-
-private enum class FaceLivenessStep(
-    val title: String,
-    val instruction: String,
-    val speechCue: String
-) {
-    STRAIGHT("Straight", "Look straight into the oval frame", "Look straight at the camera"),
-    LEFT("Left", "Slowly turn your head Left", "Slowly turn your head left"),
-    RIGHT("Right", "Slowly turn your head Right", "Now turn your head right"),
-    UP("Up", "Tilt your head slightly Up", "Look slightly up"),
-    DOWN("Down", "Tilt your head slightly Down", "Look slightly down")
-}
 
 @OptIn(ExperimentalGetImage::class)
 @Composable
@@ -158,56 +127,27 @@ fun FaceLivenessScreen(
         }
     }
 
-    var audioEnabled by remember { mutableStateOf(true) }
-    var ttsReady by remember { mutableStateOf(false) }
-    var ttsInstance by remember { mutableStateOf<TextToSpeech?>(null) }
-
-    DisposableEffect(Unit) {
-        var engine: TextToSpeech? = null
-        engine = TextToSpeech(context) { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                engine?.language = Locale.US
-                ttsReady = true
-            }
-        }
-        ttsInstance = engine
-        onDispose {
-            runCatching { engine?.stop(); engine?.shutdown() }
-        }
-    }
-
-    var currentStepIndex by remember { mutableIntStateOf(0) }
-    var faceInFrame by remember { mutableStateOf(false) }
-    var liveHint by remember { mutableStateOf("Position your face inside the oval guide") }
+    var faceReady by remember { mutableStateOf(false) }
+    var isTooCloseOrBad by remember { mutableStateOf(false) }
+    var scanProgress by remember { mutableFloatStateOf(0f) }
+    var liveHint by remember { mutableStateOf("Center your face inside the circle") }
     var capturedStraightBytes by remember { mutableStateOf<ByteArray?>(null) }
-    var livenessCompleted by remember { mutableStateOf(false) }
+    var verificationCompleted by remember { mutableStateOf(false) }
     var isCapturingPhoto by remember { mutableStateOf(false) }
     var cameraError by remember { mutableStateOf<String?>(null) }
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
-    var leftTurnYawSign by remember { mutableFloatStateOf(0f) }
 
-    val currentStep = FaceLivenessStep.entries.getOrNull(currentStepIndex)
-
-    LaunchedEffect(currentStepIndex, ttsReady, audioEnabled, livenessCompleted, hasCameraPermission) {
-        if (hasCameraPermission && ttsReady && audioEnabled) {
-            val phrase = if (livenessCompleted) {
-                "Face verified successfully"
-            } else {
-                currentStep?.speechCue.orEmpty()
-            }
-            if (phrase.isNotBlank()) {
-                runCatching {
-                    ttsInstance?.speak(phrase, TextToSpeech.QUEUE_FLUSH, null, "liveness_cue_$currentStepIndex")
-                }
-            }
-        }
-    }
+    val animatedProgress by animateFloatAsState(
+        targetValue = scanProgress.coerceIn(0f, 1f),
+        animationSpec = tween(durationMillis = 180),
+        label = "faceProgress"
+    )
 
     val detector = remember {
         val options = FaceDetectorOptions.Builder()
             .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
             .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
-            .setMinFaceSize(0.24f)
+            .setMinFaceSize(0.22f)
             .build()
         FaceDetection.getClient(options)
     }
@@ -231,6 +171,7 @@ fun FaceLivenessScreen(
                     isCapturingPhoto = false
                     if (bmp != null) {
                         capturedStraightBytes = compressPortraitJpegUnder5Mb(bmp)
+                        verificationCompleted = true
                     }
                 }
 
@@ -266,10 +207,10 @@ fun FaceLivenessScreen(
                     }
                 }
                 Spacer(modifier = Modifier.height(16.dp))
-                Text("Front Camera Required", style = MaterialTheme.typography.headlineSmall, color = Color.White)
+                Text("Camera Access Required", style = MaterialTheme.typography.headlineSmall, color = Color.White)
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    "Allow camera access to complete guided live face verification.",
+                    "Allow camera access to scan and verify your face.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = Color.White.copy(alpha = 0.78f),
                     textAlign = TextAlign.Center
@@ -291,7 +232,7 @@ fun FaceLivenessScreen(
             return@Box
         }
 
-        if (livenessCompleted && capturedStraightBytes != null) {
+        if (verificationCompleted && capturedStraightBytes != null) {
             val previewBmp = remember(capturedStraightBytes) {
                 BitmapFactory.decodeByteArray(capturedStraightBytes, 0, capturedStraightBytes!!.size)
             }
@@ -314,7 +255,7 @@ fun FaceLivenessScreen(
                         Icon(Icons.Default.CheckCircle, contentDescription = null, tint = SuccessGreen, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            "Face Verified Successfully",
+                            "Face Verified",
                             color = SuccessGreen,
                             fontWeight = FontWeight.Bold,
                             style = MaterialTheme.typography.titleSmall
@@ -336,13 +277,6 @@ fun FaceLivenessScreen(
                     )
                 }
 
-                Spacer(modifier = Modifier.height(18.dp))
-                Text(
-                    "All 5 liveness checks passed (Straight, Left, Right, Up, Down).",
-                    color = Color.White.copy(alpha = 0.8f),
-                    style = MaterialTheme.typography.bodyMedium,
-                    textAlign = TextAlign.Center
-                )
                 Spacer(modifier = Modifier.height(28.dp))
 
                 Row(
@@ -352,9 +286,11 @@ fun FaceLivenessScreen(
                     OutlinedButton(
                         onClick = {
                             capturedStraightBytes = null
-                            livenessCompleted = false
-                            currentStepIndex = 0
-                            leftTurnYawSign = 0f
+                            verificationCompleted = false
+                            scanProgress = 0f
+                            faceReady = false
+                            isTooCloseOrBad = false
+                            liveHint = "Center your face inside the circle"
                         },
                         shape = RoundedCornerShape(16.dp),
                         border = BorderStroke(1.dp, Color.White.copy(alpha = 0.3f)),
@@ -377,7 +313,7 @@ fun FaceLivenessScreen(
                     ) {
                         Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Use Face Photo", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text("Use Photo", maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
             }
@@ -391,8 +327,7 @@ fun FaceLivenessScreen(
             val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
             val mainExecutor = ContextCompat.getMainExecutor(context)
             var lastProcessedMs = 0L
-            var stableHits = 0
-            var stepCooldownUntil = 0L
+            var stableHoldCount = 0
 
             cameraProviderFuture.addListener({
                 try {
@@ -410,7 +345,7 @@ fun FaceLivenessScreen(
                         .apply {
                             setAnalyzer(analyzerExecutor) { proxy ->
                                 val now = System.currentTimeMillis()
-                                if (now - lastProcessedMs < 140L || livenessCompleted) {
+                                if (now - lastProcessedMs < 130L || verificationCompleted || isCapturingPhoto) {
                                     proxy.close()
                                     return@setAnalyzer
                                 }
@@ -424,16 +359,29 @@ fun FaceLivenessScreen(
                                 val rot = proxy.imageInfo.rotationDegrees
                                 val imgW = if (rot == 90 || rot == 270) proxy.height else proxy.width
                                 val imgH = if (rot == 90 || rot == 270) proxy.width else proxy.height
+                                val meanLuma = estimateFrameLuma(proxy)
                                 val input = InputImage.fromMediaImage(mediaImage, rot)
 
                                 detector.process(input)
                                     .addOnSuccessListener(mainExecutor) { faces ->
-                                        if (livenessCompleted) return@addOnSuccessListener
+                                        if (verificationCompleted || isCapturingPhoto) return@addOnSuccessListener
                                         val face = faces.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }
+
+                                        if (meanLuma < 42.0) {
+                                            stableHoldCount = 0
+                                            faceReady = false
+                                            isTooCloseOrBad = true
+                                            scanProgress = 0.05f
+                                            liveHint = "Too dark — move to brighter lighting"
+                                            return@addOnSuccessListener
+                                        }
+
                                         if (face == null) {
-                                            stableHits = 0
-                                            faceInFrame = false
-                                            liveHint = "Position your face clearly inside the oval"
+                                            stableHoldCount = 0
+                                            faceReady = false
+                                            isTooCloseOrBad = false
+                                            scanProgress = 0f
+                                            liveHint = "Position your face inside the circle"
                                             return@addOnSuccessListener
                                         }
 
@@ -441,77 +389,61 @@ fun FaceLivenessScreen(
                                         val cx = box.centerX().toFloat() / imgW.coerceAtLeast(1)
                                         val cy = box.centerY().toFloat() / imgH.coerceAtLeast(1)
                                         val sizeFrac = box.width().toFloat() / imgW.coerceAtLeast(1)
+                                        val yaw = abs(face.headEulerAngleY)
+                                        val pitch = abs(face.headEulerAngleX)
+                                        val leftEyeOpen = face.leftEyeOpenProbability ?: 0.8f
+                                        val rightEyeOpen = face.rightEyeOpenProbability ?: 0.8f
 
-                                        val centered = cx in 0.24f..0.76f && cy in 0.20f..0.78f && sizeFrac >= 0.22f
-                                        faceInFrame = centered
-                                        if (!centered) {
-                                            stableHits = 0
-                                            liveHint = if (sizeFrac < 0.22f) {
-                                                "Move slightly closer to the camera"
-                                            } else {
-                                                "Center your face inside the oval guide"
+                                        when {
+                                            sizeFrac > 0.64f -> {
+                                                stableHoldCount = 0
+                                                faceReady = false
+                                                isTooCloseOrBad = true
+                                                scanProgress = 0.18f
+                                                liveHint = "Too close — move back slightly"
                                             }
-                                            return@addOnSuccessListener
-                                        }
-
-                                        if (now < stepCooldownUntil) return@addOnSuccessListener
-
-                                        val yaw = face.headEulerAngleY // left/right
-                                        val pitch = face.headEulerAngleX // up/down
-                                        val step = FaceLivenessStep.entries.getOrNull(currentStepIndex)
-
-                                        val matched = when (step) {
-                                            FaceLivenessStep.STRAIGHT -> {
-                                                abs(yaw) <= 10f && abs(pitch) <= 10f
+                                            sizeFrac < 0.22f -> {
+                                                stableHoldCount = 0
+                                                faceReady = false
+                                                isTooCloseOrBad = false
+                                                scanProgress = 0.18f
+                                                liveHint = "Move slightly closer to camera"
                                             }
-                                            FaceLivenessStep.LEFT -> {
-                                                abs(yaw) >= 13.5f
+                                            cx !in 0.28f..0.72f || cy !in 0.24f..0.74f -> {
+                                                stableHoldCount = 0
+                                                faceReady = false
+                                                isTooCloseOrBad = false
+                                                scanProgress = 0.25f
+                                                liveHint = "Center your face inside the circle"
                                             }
-                                            FaceLivenessStep.RIGHT -> {
-                                                if (leftTurnYawSign > 0f) yaw <= -13.5f
-                                                else if (leftTurnYawSign < 0f) yaw >= 13.5f
-                                                else abs(yaw) >= 13.5f
+                                            yaw > 13f || pitch > 13f -> {
+                                                stableHoldCount = 0
+                                                faceReady = false
+                                                isTooCloseOrBad = false
+                                                scanProgress = 0.35f
+                                                liveHint = "Look straight ahead at the camera"
                                             }
-                                            FaceLivenessStep.UP -> {
-                                                pitch >= 10f
+                                            leftEyeOpen < 0.35f || rightEyeOpen < 0.35f -> {
+                                                stableHoldCount = 0
+                                                faceReady = false
+                                                isTooCloseOrBad = false
+                                                scanProgress = 0.40f
+                                                liveHint = "Keep your eyes clearly open"
                                             }
-                                            FaceLivenessStep.DOWN -> {
-                                                pitch <= -10f
-                                            }
-                                            null -> false
-                                        }
-
-                                        if (matched) {
-                                            stableHits++
-                                            liveHint = "Great! Hold steady..."
-                                            val requiredHits = if (step == FaceLivenessStep.STRAIGHT) 3 else 2
-                                            if (stableHits >= requiredHits) {
-                                                stableHits = 0
-                                                stepCooldownUntil = now + 750L
-                                                if (step == FaceLivenessStep.STRAIGHT) {
+                                            else -> {
+                                                stableHoldCount++
+                                                faceReady = true
+                                                isTooCloseOrBad = false
+                                                val p = (stableHoldCount / 7f).coerceIn(0.15f, 1f)
+                                                scanProgress = p
+                                                liveHint = if (p >= 1f) {
+                                                    "Taking photo..."
+                                                } else {
+                                                    "Hold steady... ${(p * 100).roundToInt()}%"
+                                                }
+                                                if (stableHoldCount >= 7) {
                                                     captureStraightPortrait()
                                                 }
-                                                if (step == FaceLivenessStep.LEFT) {
-                                                    leftTurnYawSign = if (yaw >= 0f) 1f else -1f
-                                                }
-                                                if (currentStepIndex < FaceLivenessStep.entries.lastIndex) {
-                                                    currentStepIndex++
-                                                    liveHint = FaceLivenessStep.entries[currentStepIndex].instruction
-                                                } else {
-                                                    livenessCompleted = true
-                                                }
-                                            }
-                                        } else {
-                                            stableHits = 0
-                                            liveHint = when {
-                                                step == FaceLivenessStep.RIGHT &&
-                                                    ((leftTurnYawSign > 0f && yaw > 10f) || (leftTurnYawSign < 0f && yaw < -10f)) ->
-                                                    "Wrong way — follow the → arrow"
-                                                step == FaceLivenessStep.UP && pitch < -8f ->
-                                                    "Wrong way — tilt UP toward the ↑ arrow"
-                                                step == FaceLivenessStep.DOWN && pitch > 8f ->
-                                                    "Wrong way — tilt DOWN toward the ↓ arrow"
-                                                else -> step?.instruction ?: "Hold steady"
                                             }
                                         }
                                     }
@@ -546,112 +478,46 @@ fun FaceLivenessScreen(
             modifier = Modifier.fillMaxSize()
         )
 
-        // Animated directional pulse & glow for arrow HUD
-        val arrowInfinite = rememberInfiniteTransition(label = "livenessArrowPulse")
-        val arrowShiftFraction by arrowInfinite.animateFloat(
-            initialValue = -1f,
-            targetValue = 1f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(durationMillis = 760, easing = FastOutSlowInEasing),
-                repeatMode = RepeatMode.Reverse
-            ),
-            label = "arrowShift"
-        )
-        val arrowAlpha by arrowInfinite.animateFloat(
-            initialValue = 0.65f,
-            targetValue = 1f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(durationMillis = 760, easing = FastOutSlowInEasing),
-                repeatMode = RepeatMode.Reverse
-            ),
-            label = "arrowAlpha"
-        )
-
-        // Translucent Mask + Center Oval Guide + Directional Target Arc
-        val guideColor = if (faceInFrame) SuccessGreen else ZulvazaOrange
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val ovalW = size.width * 0.70f
-            val ovalH = ovalW * 1.32f
-            val left = (size.width - ovalW) / 2f
-            val top = (size.height - ovalH) / 2f - 18.dp.toPx()
-            val ovalRect = Rect(left, top, left + ovalW, top + ovalH)
-            val ovalPath = Path().apply { addOval(ovalRect) }
-
-            clipPath(ovalPath, clipOp = ClipOp.Difference) {
-                drawRect(Color(0xFF060B14).copy(alpha = 0.80f))
-            }
-
-            // Base oval guide
-            drawOval(
-                color = guideColor.copy(alpha = 0.45f),
-                topLeft = Offset(left, top),
-                size = Size(ovalW, ovalH),
-                style = Stroke(width = 3.dp.toPx())
-            )
-
-            // Directional glowing arc cue on the active movement side
-            val arcPad = 8.dp.toPx()
-            val arcTopLeft = Offset(left - arcPad, top - arcPad)
-            val arcSize = Size(ovalW + arcPad * 2f, ovalH + arcPad * 2f)
-            val activeAccent = if (faceInFrame) ZulvazaOrange else Color.White.copy(alpha = 0.75f)
-            when (currentStep) {
-                FaceLivenessStep.STRAIGHT -> {
-                    drawOval(
-                        color = if (faceInFrame) SuccessGreen else Color.White.copy(alpha = 0.85f),
-                        topLeft = Offset(left, top),
-                        size = Size(ovalW, ovalH),
-                        style = Stroke(width = 4.5.dp.toPx())
-                    )
-                }
-                FaceLivenessStep.LEFT -> {
-                    drawArc(
-                        color = activeAccent.copy(alpha = arrowAlpha),
-                        startAngle = 140f,
-                        sweepAngle = 80f,
-                        useCenter = false,
-                        topLeft = arcTopLeft,
-                        size = arcSize,
-                        style = Stroke(width = 6.dp.toPx(), cap = StrokeCap.Round)
-                    )
-                }
-                FaceLivenessStep.RIGHT -> {
-                    drawArc(
-                        color = activeAccent.copy(alpha = arrowAlpha),
-                        startAngle = -40f,
-                        sweepAngle = 80f,
-                        useCenter = false,
-                        topLeft = arcTopLeft,
-                        size = arcSize,
-                        style = Stroke(width = 6.dp.toPx(), cap = StrokeCap.Round)
-                    )
-                }
-                FaceLivenessStep.UP -> {
-                    drawArc(
-                        color = activeAccent.copy(alpha = arrowAlpha),
-                        startAngle = 230f,
-                        sweepAngle = 80f,
-                        useCenter = false,
-                        topLeft = arcTopLeft,
-                        size = arcSize,
-                        style = Stroke(width = 6.dp.toPx(), cap = StrokeCap.Round)
-                    )
-                }
-                FaceLivenessStep.DOWN -> {
-                    drawArc(
-                        color = activeAccent.copy(alpha = arrowAlpha),
-                        startAngle = 50f,
-                        sweepAngle = 80f,
-                        useCenter = false,
-                        topLeft = arcTopLeft,
-                        size = arcSize,
-                        style = Stroke(width = 6.dp.toPx(), cap = StrokeCap.Round)
-                    )
-                }
-                null -> Unit
-            }
+        // Single Circular Aperture with Animated Sweep Progress Ring
+        val ringColor = when {
+            isTooCloseOrBad -> ErrorRed
+            faceReady -> SuccessGreen
+            else -> ZulvazaOrange
         }
 
-        // Clean Top Bar: Close + Step Counter Pill + Voice Cue Toggle (No 5-word pill strip)
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val circleDiameter = size.width * 0.72f
+            val left = (size.width - circleDiameter) / 2f
+            val top = (size.height - circleDiameter) / 2f - 18.dp.toPx()
+            val circleRect = Rect(left, top, left + circleDiameter, top + circleDiameter)
+            val circlePath = Path().apply { addOval(circleRect) }
+
+            clipPath(circlePath, clipOp = ClipOp.Difference) {
+                drawRect(Color(0xFF060B14).copy(alpha = 0.84f))
+            }
+
+            // Track circle outline
+            drawOval(
+                color = Color.White.copy(alpha = 0.25f),
+                topLeft = Offset(left, top),
+                size = Size(circleDiameter, circleDiameter),
+                style = Stroke(width = 4.dp.toPx())
+            )
+
+            // Animated Sweep Ring
+            val arcPad = 6.dp.toPx()
+            drawArc(
+                color = ringColor,
+                startAngle = -90f,
+                sweepAngle = 360f * animatedProgress,
+                useCenter = false,
+                topLeft = Offset(left - arcPad, top - arcPad),
+                size = Size(circleDiameter + arcPad * 2f, circleDiameter + arcPad * 2f),
+                style = Stroke(width = 6.dp.toPx(), cap = StrokeCap.Round)
+            )
+        }
+
+        // Minimal Top Header: Close + Clean Circular Scan Title/Percentage Pill
         Row(
             modifier = Modifier
                 .align(Alignment.TopCenter)
@@ -667,22 +533,23 @@ fun FaceLivenessScreen(
                     .background(Color.Black.copy(alpha = 0.55f), CircleShape)
                     .testTag("face_liveness_close")
             ) {
-                Icon(Icons.Default.Close, contentDescription = "Close face verification", tint = Color.White)
+                Icon(Icons.Default.Close, contentDescription = "Close face scanner", tint = Color.White)
             }
 
             Surface(
-                color = Color(0xFF0F172A).copy(alpha = 0.82f),
+                color = Color(0xFF0F172A).copy(alpha = 0.84f),
                 shape = RoundedCornerShape(50),
-                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f))
+                border = BorderStroke(1.dp, ringColor.copy(alpha = 0.6f))
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.Default.Face, contentDescription = null, tint = ZulvazaOrange, modifier = Modifier.size(16.dp))
+                    Icon(Icons.Default.Face, contentDescription = null, tint = ringColor, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
+                    val pct = (animatedProgress * 100).roundToInt().coerceIn(0, 100)
                     Text(
-                        text = "Step ${currentStepIndex + 1} of 5",
+                        text = if (pct > 0) "Face Scan • $pct%" else "Face Verification",
                         color = Color.White,
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.SemiBold
@@ -690,205 +557,55 @@ fun FaceLivenessScreen(
                 }
             }
 
-            IconButton(
-                onClick = { audioEnabled = !audioEnabled },
-                modifier = Modifier
-                    .size(48.dp)
-                    .background(Color.Black.copy(alpha = 0.55f), CircleShape)
-            ) {
-                Icon(
-                    imageVector = if (audioEnabled) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
-                    contentDescription = "Toggle voice guide",
-                    tint = if (audioEnabled) ZulvazaOrange else Color.White
-                )
-            }
+            Spacer(modifier = Modifier.size(48.dp))
         }
 
-        // Animated Directional Arrow Cue System
-        if (currentStep != null) {
-            val shiftPx = (arrowShiftFraction * 18f).roundToInt()
-            when (currentStep) {
-                FaceLivenessStep.STRAIGHT -> {
-                    Surface(
-                        color = Color(0xFF0F172A).copy(alpha = 0.78f),
-                        shape = CircleShape,
-                        border = BorderStroke(1.5.dp, if (faceInFrame) SuccessGreen else ZulvazaOrange),
-                        modifier = Modifier
-                            .align(Alignment.TopCenter)
-                            .padding(top = 82.dp)
-                            .alpha(arrowAlpha)
-                            .testTag("liveness_arrow_straight")
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.CenterFocusStrong,
-                                contentDescription = "Look straight ahead",
-                                tint = if (faceInFrame) SuccessGreen else ZulvazaOrange,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "LOOK STRAIGHT",
-                                color = Color.White,
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-                }
-                FaceLivenessStep.LEFT -> {
-                    LivenessDirectionalArrowBadge(
-                        icon = Icons.AutoMirrored.Filled.ArrowBack,
-                        label = "TURN LEFT",
-                        alpha = arrowAlpha,
-                        modifier = Modifier
-                            .align(Alignment.CenterStart)
-                            .padding(start = 12.dp)
-                            .offset { IntOffset(x = -shiftPx, y = -28) }
-                            .testTag("liveness_arrow_left")
-                    )
-                }
-                FaceLivenessStep.RIGHT -> {
-                    LivenessDirectionalArrowBadge(
-                        icon = Icons.AutoMirrored.Filled.ArrowForward,
-                        label = "TURN RIGHT",
-                        alpha = arrowAlpha,
-                        modifier = Modifier
-                            .align(Alignment.CenterEnd)
-                            .padding(end = 12.dp)
-                            .offset { IntOffset(x = shiftPx, y = -28) }
-                            .testTag("liveness_arrow_right")
-                    )
-                }
-                FaceLivenessStep.UP -> {
-                    LivenessDirectionalArrowBadge(
-                        icon = Icons.Default.ArrowUpward,
-                        label = "LOOK UP",
-                        alpha = arrowAlpha,
-                        modifier = Modifier
-                            .align(Alignment.TopCenter)
-                            .padding(top = 82.dp)
-                            .offset { IntOffset(x = 0, y = -shiftPx) }
-                            .testTag("liveness_arrow_up")
-                    )
-                }
-                FaceLivenessStep.DOWN -> {
-                    LivenessDirectionalArrowBadge(
-                        icon = Icons.Default.ArrowDownward,
-                        label = "LOOK DOWN",
-                        alpha = arrowAlpha,
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .padding(bottom = 166.dp)
-                            .offset { IntOffset(x = 0, y = shiftPx) }
-                            .testTag("liveness_arrow_down")
-                    )
-                }
-            }
-        }
-
-        // Bottom Live Prompt Card + Step Dots
+        // Minimal Bottom Floating Status Pill (replaces 5-segment progress block)
         Surface(
-            color = Color(0xFF0F172A).copy(alpha = 0.92f),
-            shape = RoundedCornerShape(24.dp),
-            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
+            color = Color(0xFF0F172A).copy(alpha = 0.88f),
+            shape = RoundedCornerShape(50),
+            border = BorderStroke(1.dp, ringColor.copy(alpha = 0.55f)),
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 20.dp)
+                .padding(horizontal = 24.dp, vertical = 34.dp)
         ) {
-            Column(
-                modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                if (cameraError != null) {
-                    Text(cameraError!!, color = Color(0xFFFCA5A5), style = MaterialTheme.typography.bodySmall)
-                    Spacer(modifier = Modifier.height(6.dp))
-                }
-                Text(
-                    text = currentStep?.instruction ?: "Verifying...",
-                    color = Color.White,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.Center
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = liveHint,
-                    color = if (faceInFrame) SuccessGreen else Color.White.copy(alpha = 0.78f),
-                    style = MaterialTheme.typography.labelLarge,
-                    textAlign = TextAlign.Center
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    repeat(FaceLivenessStep.entries.size) { idx ->
-                        val activeColor = when {
-                            idx < currentStepIndex -> SuccessGreen
-                            idx == currentStepIndex -> ZulvazaOrange
-                            else -> Color.White.copy(alpha = 0.20f)
-                        }
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(6.dp)
-                                .clip(CircleShape)
-                                .background(activeColor)
-                        )
-                    }
-                }
-            }
+            Text(
+                text = cameraError ?: liveHint,
+                color = when {
+                    cameraError != null || isTooCloseOrBad -> Color(0xFFFCA5A5)
+                    faceReady -> Color(0xFF86EFAC)
+                    else -> Color.White
+                },
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
+            )
         }
     }
 }
 
-@Composable
-private fun LivenessDirectionalArrowBadge(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    label: String,
-    alpha: Float,
-    modifier: Modifier = Modifier
-) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = modifier.alpha(alpha)
-    ) {
-        Surface(
-            shape = CircleShape,
-            color = ZulvazaOrange,
-            border = BorderStroke(2.dp, Color.White),
-            shadowElevation = 8.dp,
-            modifier = Modifier.size(56.dp)
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = label,
-                    tint = Color.White,
-                    modifier = Modifier.size(30.dp)
-                )
+private fun estimateFrameLuma(proxy: ImageProxy): Double {
+    val plane = proxy.planes.firstOrNull() ?: return 120.0
+    val buffer = plane.buffer
+    val rowStride = plane.rowStride
+    val w = proxy.width
+    val h = proxy.height
+    var sum = 0L
+    var count = 0
+    val stepX = (w / 12).coerceAtLeast(4)
+    val stepY = (h / 12).coerceAtLeast(4)
+    for (y in (h / 4) until (3 * h / 4) step stepY) {
+        val rowOff = y * rowStride
+        for (x in (w / 4) until (3 * w / 4) step stepX) {
+            val idx = rowOff + x
+            if (idx in 0 until buffer.limit()) {
+                sum += (buffer.get(idx).toInt() and 0xFF)
+                count++
             }
         }
-        Spacer(modifier = Modifier.height(6.dp))
-        Surface(
-            color = Color(0xFF0F172A).copy(alpha = 0.9f),
-            shape = RoundedCornerShape(50),
-            border = BorderStroke(1.dp, ZulvazaOrange.copy(alpha = 0.7f))
-        ) {
-            Text(
-                text = label,
-                color = Color.White,
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-            )
-        }
     }
+    return if (count > 0) sum.toDouble() / count else 120.0
 }
 
 private fun faceImageProxyToRotatedBitmap(image: ImageProxy): Bitmap? {
@@ -899,7 +616,6 @@ private fun faceImageProxyToRotatedBitmap(image: ImageProxy): Bitmap? {
     val rot = image.imageInfo.rotationDegrees
     val matrix = Matrix().apply {
         if (rot != 0) postRotate(rot.toFloat())
-        // Mirror horizontally to match natural front-facing selfie perspective
         postScale(-1f, 1f)
     }
     return Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, matrix, true)

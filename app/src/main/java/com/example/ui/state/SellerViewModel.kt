@@ -43,6 +43,9 @@ import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -97,6 +100,14 @@ data class CnicOcrBackgroundState(
     val errorMessage: String? = null
 )
 
+enum class RecoveryStep {
+    NONE,
+    EMAIL,
+    OTP,
+    NEW_PASSWORD,
+    SUCCESS
+}
+
 data class SellerUiState(
     val rootDestination: RootDestination = RootDestination.SPLASH,
     val activeTab: MainTab = MainTab.HOME,
@@ -118,7 +129,10 @@ data class SellerUiState(
     val otpPendingEmail: String? = null,
     val signupNeedsEmailLoginOtp: Boolean = false,
     val loginOtpPendingEmail: String? = null,
-    val recoveryPendingEmail: String? = null,
+    val recoveryStep: RecoveryStep = RecoveryStep.NONE,
+    val recoveryEmail: String = "",
+    val recoveryAccessToken: String? = null,
+    val recoveryErrorMessage: String? = null,
     val isBusy: Boolean = false,
     val isDataLoading: Boolean = false,
     val isOnline: Boolean = true,
@@ -132,7 +146,11 @@ data class SellerUiState(
     val notifications: List<SellerNotificationItem> = emptyList(),
     val permissionsPromptCompleted: Boolean = true,
     val usernameConflictNonce: Int = 0,
-    val cnicOcrState: CnicOcrBackgroundState = CnicOcrBackgroundState()
+    val cnicOcrState: CnicOcrBackgroundState = CnicOcrBackgroundState(),
+    val hasAppPin: Boolean = false,
+    val isAppPinEnabled: Boolean = false,
+    val isAppLocked: Boolean = false,
+    val showPinSetupPrompt: Boolean = false
 ) {
     val unreadNotificationCount: Int
         get() = notifications.count { !it.isRead }
@@ -157,11 +175,15 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
             val savedRepo = sessionStore.getGithubRepo()
             val savedNotifs = sessionStore.loadNotifications()
             val permsDone = sessionStore.isPermissionsPromptDone()
+            val pinExists = sessionStore.hasAppPin()
+            val pinEnabled = sessionStore.isAppPinEnabled()
             _uiState.update {
                 it.copy(
                     githubRepo = savedRepo,
                     notifications = savedNotifs,
-                    permissionsPromptCompleted = permsDone
+                    permissionsPromptCompleted = permsDone,
+                    hasAppPin = pinExists,
+                    isAppPinEnabled = pinEnabled
                 )
             }
         }
@@ -323,6 +345,11 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
                 pendingDeepLink = null
                 _uiState.update { it.copy(rootDestination = target) }
                 return@launch
+            }
+
+            val pinLocked = sessionStore.isAppPinEnabled()
+            if (pinLocked) {
+                _uiState.update { it.copy(isAppLocked = true, hasAppPin = true, isAppPinEnabled = true) }
             }
 
             val cached = sessionStore.loadWorkspaceCache()
@@ -509,6 +536,13 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
             }
 
             sessionStore.saveWorkspaceCache(verification, store, products)
+            val userNotifs = sessionStore.loadNotifications(session.userId)
+            val pinExists = sessionStore.hasAppPin()
+            val pinEnabled = sessionStore.isAppPinEnabled()
+            val pinOffered = sessionStore.wasPinSetupOffered(session.userId)
+            val shouldOfferPin = verification.status != VerificationStatus.UNSUBMITTED &&
+                !pinExists &&
+                !pinOffered
 
             _uiState.update {
                 it.copy(
@@ -520,6 +554,10 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
                     drafts = drafts,
                     mfaFactors = factors,
                     activeDevices = devices,
+                    notifications = userNotifs,
+                    hasAppPin = pinExists,
+                    isAppPinEnabled = pinEnabled,
+                    showPinSetupPrompt = shouldOfferPin,
                     isOfflineMode = false,
                     rootDestination = dest,
                     isDataLoading = false,
@@ -528,11 +566,11 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
             }
 
             // Detect alerts: new device logins, verification decision, and app updates
-            evaluateDeviceLoginNotifications(devices, deviceId)
-            evaluateVerificationStatusNotification(verification)
+            evaluateDeviceLoginNotifications(devices, deviceId, session.userId)
+            evaluateVerificationStatusNotification(verification, session.userId)
             checkForAppUpdateSilent()
 
-            // Pre-sign thumbnails, store logo/banner, and CNIC previews in background
+            // Pre-sign ALL store, product, draft & KYC media in parallel for instant image rendering
             preSignWorkspaceMedia(session, verification, store, products, drafts)
 
             val dl = pendingDeepLink
@@ -558,27 +596,59 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
         products: List<ProductItem>,
         drafts: List<ProductDraft>
     ) {
-        viewModelScope.launch {
-            store?.logoPath?.let { ensureSignedUrl(session, SupabaseConfig.BUCKET_STORE_MEDIA, it) }
-            store?.bannerPath?.let { ensureSignedUrl(session, SupabaseConfig.BUCKET_STORE_MEDIA, it) }
+        viewModelScope.launch(Dispatchers.IO) {
+            val existingSigned = _uiState.value.signedUrls
+            val requests = linkedSetOf<Pair<String, String>>()
+            store?.logoPath?.takeIf { it.isNotBlank() }?.let { requests += SupabaseConfig.BUCKET_STORE_MEDIA to it }
+            store?.bannerPath?.takeIf { it.isNotBlank() }?.let { requests += SupabaseConfig.BUCKET_STORE_MEDIA to it }
             products.forEach { product ->
-                product.imagePaths.firstOrNull()?.let {
-                    ensureSignedUrl(session, SupabaseConfig.BUCKET_PRODUCT_IMAGES, it)
+                product.imagePaths.filter { it.isNotBlank() }.forEach { path ->
+                    requests += SupabaseConfig.BUCKET_PRODUCT_IMAGES to path
+                }
+                product.videoPath?.takeIf { it.isNotBlank() }?.let { path ->
+                    requests += SupabaseConfig.BUCKET_PRODUCT_VIDEOS to path
                 }
             }
             drafts.forEach { draft ->
-                draft.imagePaths.firstOrNull()?.let {
-                    ensureSignedUrl(session, SupabaseConfig.BUCKET_PRODUCT_IMAGES, it)
+                draft.imagePaths.filter { it.isNotBlank() }.forEach { path ->
+                    requests += SupabaseConfig.BUCKET_PRODUCT_IMAGES to path
+                }
+                draft.videoPath?.takeIf { it.isNotBlank() }?.let { path ->
+                    requests += SupabaseConfig.BUCKET_PRODUCT_VIDEOS to path
                 }
             }
             if (verification.details.cnicFront.isNotBlank()) {
-                ensureSignedUrl(session, SupabaseConfig.BUCKET_SELLER_KYC, verification.details.cnicFront)
+                requests += SupabaseConfig.BUCKET_SELLER_KYC to verification.details.cnicFront
             }
             if (verification.details.cnicBack.isNotBlank()) {
-                ensureSignedUrl(session, SupabaseConfig.BUCKET_SELLER_KYC, verification.details.cnicBack)
+                requests += SupabaseConfig.BUCKET_SELLER_KYC to verification.details.cnicBack
             }
             if (verification.details.facePhoto.isNotBlank()) {
-                ensureSignedUrl(session, SupabaseConfig.BUCKET_SELLER_FACES, verification.details.facePhoto)
+                requests += SupabaseConfig.BUCKET_SELLER_FACES to verification.details.facePhoto
+            }
+
+            val missing = requests.filter { (bucket, path) ->
+                !path.startsWith("http") &&
+                    !path.startsWith("content://") &&
+                    !path.startsWith("file://") &&
+                    existingSigned["$bucket:$path"] == null
+            }
+            if (missing.isEmpty()) return@launch
+
+            val signedPairs = coroutineScope {
+                missing.map { (bucket, path) ->
+                    async {
+                        val url = runCatching {
+                            supabase.createSignedUrl(session, bucket, path, expiresInSec = 3600)
+                        }.getOrNull()
+                        if (url != null) ("$bucket:$path" to url) else null
+                    }
+                }.awaitAll().filterNotNull()
+            }
+            if (signedPairs.isNotEmpty()) {
+                _uiState.update { state ->
+                    state.copy(signedUrls = state.signedUrls + signedPairs.toMap())
+                }
             }
         }
     }
@@ -817,37 +887,160 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { it.copy(loginOtpPendingEmail = null) }
     }
 
+    fun openForgotPassword(prefillEmail: String = "") {
+        _uiState.update {
+            it.copy(
+                recoveryStep = RecoveryStep.EMAIL,
+                recoveryEmail = prefillEmail.trim(),
+                recoveryAccessToken = null,
+                recoveryErrorMessage = null
+            )
+        }
+    }
+
+    private fun mapPasswordResetError(e: Exception): String {
+        if (e is SupabaseException) {
+            val msgLower = e.message.orEmpty().lowercase(Locale.US)
+            if (e.statusCode == 429 ||
+                msgLower.contains("over_email_send_rate_limit") ||
+                msgLower.contains("rate limit") ||
+                msgLower.contains("too many")
+            ) {
+                return "Too many requests. Please wait a minute and try again."
+            }
+        }
+        return "Something went wrong. Please try again."
+    }
+
     fun sendPasswordResetOtp(email: String) {
+        val cleanEmail = email.trim().lowercase(Locale.US)
         viewModelScope.launch {
-            _uiState.update { it.copy(isBusy = true) }
+            _uiState.update { it.copy(isBusy = true, recoveryErrorMessage = null) }
             try {
-                supabase.sendPasswordReset(email)
-                _uiState.update { it.copy(recoveryPendingEmail = email.trim(), isBusy = false) }
-                showToast("Recovery code sent to ${email.trim()}")
+                supabase.sendPasswordReset(cleanEmail)
+                _uiState.update {
+                    it.copy(
+                        recoveryStep = RecoveryStep.OTP,
+                        recoveryEmail = cleanEmail,
+                        recoveryAccessToken = null,
+                        recoveryErrorMessage = null,
+                        isBusy = false
+                    )
+                }
+                showToast("Password reset code sent to $cleanEmail")
             } catch (e: Exception) {
-                _uiState.update { it.copy(isBusy = false) }
-                showToast(e.message ?: "Could not send recovery email", isError = true)
+                val msg = mapPasswordResetError(e)
+                _uiState.update {
+                    it.copy(
+                        recoveryErrorMessage = msg,
+                        isBusy = false
+                    )
+                }
             }
         }
     }
 
-    fun verifyRecoveryAndSetPassword(email: String, code: String, newPassword: String) {
+    fun resendPasswordResetOtp() {
+        val targetEmail = _uiState.value.recoveryEmail.trim().lowercase(Locale.US)
+        if (targetEmail.isBlank()) return
         viewModelScope.launch {
-            _uiState.update { it.copy(isBusy = true) }
+            _uiState.update { it.copy(isBusy = true, recoveryErrorMessage = null) }
             try {
-                val session = supabase.verifyRecoveryOtpAndSetPassword(email, code, newPassword)
-                _uiState.update { it.copy(recoveryPendingEmail = null) }
-                showToast("Password updated! Signing you in...")
-                completeSignIn(session)
+                supabase.sendPasswordReset(targetEmail)
+                _uiState.update { it.copy(isBusy = false, recoveryErrorMessage = null) }
+                showToast("Reset code resent to $targetEmail")
             } catch (e: Exception) {
-                _uiState.update { it.copy(isBusy = false) }
-                showToast(e.message ?: "Invalid recovery code or password", isError = true)
+                val msg = mapPasswordResetError(e)
+                _uiState.update { it.copy(isBusy = false, recoveryErrorMessage = msg) }
             }
+        }
+    }
+
+    fun verifyRecoveryOtpCode(code: String) {
+        val targetEmail = _uiState.value.recoveryEmail.trim().lowercase(Locale.US)
+        val cleanCode = code.filter { it.isDigit() }
+        if (targetEmail.isBlank() || cleanCode.length != 6) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true, recoveryErrorMessage = null) }
+            try {
+                val verifiedSession = supabase.verifyRecoveryOtp(targetEmail, cleanCode)
+                _uiState.update {
+                    it.copy(
+                        recoveryAccessToken = verifiedSession.accessToken,
+                        recoveryStep = RecoveryStep.NEW_PASSWORD,
+                        recoveryErrorMessage = null,
+                        isBusy = false
+                    )
+                }
+            } catch (_: Exception) {
+                _uiState.update {
+                    it.copy(
+                        recoveryErrorMessage = "Invalid or expired code",
+                        isBusy = false
+                    )
+                }
+            }
+        }
+    }
+
+    fun saveRecoveredPassword(newPassword: String) {
+        val token = _uiState.value.recoveryAccessToken
+        if (token.isNullOrBlank()) {
+            _uiState.update {
+                it.copy(
+                    recoveryStep = RecoveryStep.OTP,
+                    recoveryErrorMessage = "Invalid or expired code"
+                )
+            }
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true, recoveryErrorMessage = null) }
+            try {
+                supabase.updatePasswordWithRecoveryToken(token, newPassword)
+                _uiState.update {
+                    it.copy(
+                        recoveryAccessToken = null,
+                        recoveryStep = RecoveryStep.SUCCESS,
+                        recoveryErrorMessage = null,
+                        isBusy = false
+                    )
+                }
+            } catch (e: Exception) {
+                val msg = if (e is SupabaseException && e.message?.isNotBlank() == true) {
+                    e.message!!
+                } else {
+                    "Something went wrong. Please try again."
+                }
+                _uiState.update {
+                    it.copy(
+                        recoveryErrorMessage = msg,
+                        isBusy = false
+                    )
+                }
+            }
+        }
+    }
+
+    fun changeRecoveryEmail() {
+        _uiState.update {
+            it.copy(
+                recoveryStep = RecoveryStep.EMAIL,
+                recoveryAccessToken = null,
+                recoveryErrorMessage = null
+            )
         }
     }
 
     fun clearRecoveryPending() {
-        _uiState.update { it.copy(recoveryPendingEmail = null) }
+        _uiState.update {
+            it.copy(
+                recoveryStep = RecoveryStep.NONE,
+                recoveryEmail = "",
+                recoveryAccessToken = null,
+                recoveryErrorMessage = null
+            )
+        }
     }
 
     private suspend fun completeSignIn(session: UserSession) {
@@ -855,16 +1048,6 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
         val ok = verifySellerRoleOrSignOut(session)
         if (ok) {
             loadSellerWorkspace(session)
-            val deviceName = listOf(Build.MANUFACTURER, Build.MODEL)
-                .filter { it.isNotBlank() }
-                .joinToString(" ")
-                .ifBlank { "Android Device" }
-            pushNotification(
-                title = "Seller Account Signed In",
-                message = "Signed in on $deviceName. Review active sessions anytime in Security.",
-                type = NotificationType.DEVICE_LOGIN,
-                targetRoute = "devices"
-            )
         }
     }
 
@@ -873,15 +1056,110 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             _uiState.value.session?.let { supabase.signOut(it) }
             sessionStore.clearSession()
+            val pinExists = sessionStore.hasAppPin()
+            val pinEnabled = sessionStore.isAppPinEnabled()
             _uiState.update {
                 SellerUiState(
                     rootDestination = RootDestination.LOGIN,
                     isOnline = it.isOnline,
                     themeMode = it.themeMode,
-                    githubRepo = it.githubRepo
+                    githubRepo = it.githubRepo,
+                    permissionsPromptCompleted = it.permissionsPromptCompleted,
+                    hasAppPin = pinExists,
+                    isAppPinEnabled = pinEnabled,
+                    isAppLocked = false
                 )
             }
             showToast("Logged out safely")
+        }
+    }
+
+    // ==================== 5-DIGIT APP LOCK PIN ====================
+
+    suspend fun verifyCurrentAppPin(pin: String): Boolean {
+        return sessionStore.verifyAppPin(pin)
+    }
+
+    fun unlockAppWithPin(pin: String, onWrongPin: () -> Unit) {
+        viewModelScope.launch {
+            val ok = sessionStore.verifyAppPin(pin)
+            if (ok) {
+                _uiState.update { it.copy(isAppLocked = false) }
+            } else {
+                onWrongPin()
+            }
+        }
+    }
+
+    fun setupAppPin(pin: String, onDone: (() -> Unit)? = null) {
+        viewModelScope.launch {
+            runCatching {
+                sessionStore.setAppPin(pin, enabled = true)
+                _uiState.value.session?.userId?.let { sessionStore.markPinSetupOffered(it) }
+                _uiState.update {
+                    it.copy(
+                        hasAppPin = true,
+                        isAppPinEnabled = true,
+                        isAppLocked = false,
+                        showPinSetupPrompt = false
+                    )
+                }
+                showToast("5-digit App Lock PIN enabled")
+                onDone?.invoke()
+            }.onFailure { e ->
+                showToast(e.message ?: "Unable to save PIN", isError = true)
+            }
+        }
+    }
+
+    fun dismissPinSetupPrompt() {
+        viewModelScope.launch {
+            _uiState.value.session?.userId?.let { sessionStore.markPinSetupOffered(it) }
+            _uiState.update { it.copy(showPinSetupPrompt = false) }
+        }
+    }
+
+    fun toggleAppPinWithCurrentPin(
+        currentPin: String,
+        targetEnabled: Boolean,
+        onResult: (Boolean) -> Unit
+    ) {
+        viewModelScope.launch {
+            val valid = sessionStore.verifyAppPin(currentPin)
+            if (!valid) {
+                onResult(false)
+                return@launch
+            }
+            val wasEnabled = _uiState.value.isAppPinEnabled
+            sessionStore.setAppPinEnabled(targetEnabled)
+            _uiState.update { it.copy(isAppPinEnabled = targetEnabled) }
+            if (wasEnabled != targetEnabled) {
+                showToast(if (targetEnabled) "App Lock PIN enabled" else "App Lock PIN disabled")
+            }
+            onResult(true)
+        }
+    }
+
+    fun deleteAppPinWithCurrentPin(
+        currentPin: String,
+        onResult: (Boolean) -> Unit
+    ) {
+        viewModelScope.launch {
+            val valid = sessionStore.verifyAppPin(currentPin)
+            if (!valid) {
+                onResult(false)
+                return@launch
+            }
+            sessionStore.deleteAppPin()
+            _uiState.update {
+                it.copy(
+                    hasAppPin = false,
+                    isAppPinEnabled = false,
+                    isAppLocked = false
+                )
+            }
+            showToast("App Lock PIN deleted")
+            onResult(true)
         }
     }
 
@@ -961,19 +1239,20 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
 
     private suspend fun evaluateDeviceLoginNotifications(
         devices: List<ActiveDeviceSession>,
-        currentDeviceId: String
+        currentDeviceId: String,
+        userId: String? = _uiState.value.session?.userId
     ) {
         val newlySeen = notificationMutex.withLock {
-            val known = sessionStore.loadKnownDeviceIds()
+            val known = sessionStore.loadKnownDeviceIds(userId)
             val remoteIds = devices.map { it.deviceId }.toSet()
             if (known == null) {
                 // Seed known devices on first sync without flooding alerts for existing sessions
-                sessionStore.saveKnownDeviceIds(remoteIds + currentDeviceId)
+                sessionStore.saveKnownDeviceIds(remoteIds + currentDeviceId, userId)
                 return@withLock emptyList()
             }
             val unseen = devices.filter { !it.isCurrentDevice && it.deviceId !in known }
             if (unseen.isNotEmpty() || !known.containsAll(remoteIds)) {
-                sessionStore.saveKnownDeviceIds(known + remoteIds + currentDeviceId)
+                sessionStore.saveKnownDeviceIds(known + remoteIds + currentDeviceId, userId)
             }
             unseen
         }
@@ -982,7 +1261,8 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
                 title = "New Device Login Detected",
                 message = "${dev.deviceName} (${dev.osVersion}) signed in from ${dev.cityCountry}.",
                 type = NotificationType.DEVICE_LOGIN,
-                targetRoute = "devices"
+                targetRoute = "devices",
+                userId = userId
             )
         }
     }
@@ -1016,8 +1296,8 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
                                 activeDevices = devices
                             )
                         }
-                        evaluateVerificationStatusNotification(verification)
-                        evaluateDeviceLoginNotifications(devices, deviceId)
+                        evaluateVerificationStatusNotification(verification, session.userId)
+                        evaluateDeviceLoginNotifications(devices, deviceId, session.userId)
                         checkForAppUpdateSilent()
                     }
                 }
@@ -1027,16 +1307,19 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private suspend fun evaluateVerificationStatusNotification(verification: SellerVerification) {
+    private suspend fun evaluateVerificationStatusNotification(
+        verification: SellerVerification,
+        userId: String? = _uiState.value.session?.userId
+    ) {
         val statusToNotify: VerificationStatus? = notificationMutex.withLock {
-            val prevRaw = sessionStore.getLastKnownVerificationStatus()
+            val prevRaw = sessionStore.getLastKnownVerificationStatus(userId)
             val currRaw = verification.status.raw
             if (prevRaw == currRaw) return@withLock null
             if (prevRaw == null && verification.status == VerificationStatus.UNSUBMITTED) {
-                sessionStore.setLastKnownVerificationStatus(currRaw)
+                sessionStore.setLastKnownVerificationStatus(currRaw, userId)
                 return@withLock null
             }
-            sessionStore.setLastKnownVerificationStatus(currRaw)
+            sessionStore.setLastKnownVerificationStatus(currRaw, userId)
             verification.status
         }
         when (statusToNotify) {
@@ -1044,20 +1327,23 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
                 title = "Verification Under Review",
                 message = "Your CNIC, face verification & store details are under review. We'll notify you once approved.",
                 type = NotificationType.VERIFICATION,
-                targetRoute = "verification"
+                targetRoute = "verification",
+                userId = userId
             )
             VerificationStatus.APPROVED -> pushNotification(
                 title = "Seller Verification Approved",
                 message = "Congratulations! Your CNIC, face & store verification has been approved.",
                 type = NotificationType.VERIFICATION,
-                targetRoute = "verification"
+                targetRoute = "verification",
+                userId = userId
             )
             VerificationStatus.REJECTED -> pushNotification(
                 title = "Verification Needs Attention",
                 message = verification.reason?.takeIf { it.isNotBlank() }
                     ?: "Your verification submission was rejected. Please review and resubmit.",
                 type = NotificationType.VERIFICATION,
-                targetRoute = "verification"
+                targetRoute = "verification",
+                userId = userId
             )
             else -> Unit
         }
@@ -1067,7 +1353,8 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
         title: String,
         message: String,
         type: NotificationType,
-        targetRoute: String? = null
+        targetRoute: String? = null,
+        userId: String? = _uiState.value.session?.userId
     ) {
         val (item, shouldNotify) = notificationMutex.withLock {
             val now = System.currentTimeMillis()
@@ -1090,7 +1377,7 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
                 targetRoute = targetRoute
             )
             val updated = (listOf(created) + _uiState.value.notifications).take(100)
-            sessionStore.saveNotifications(updated)
+            sessionStore.saveNotifications(updated, userId)
             _uiState.update { it.copy(notifications = updated) }
             created to true
         }
@@ -1107,18 +1394,20 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
 
     fun markNotificationRead(id: String) {
         viewModelScope.launch {
+            val uid = _uiState.value.session?.userId
             val updated = _uiState.value.notifications.map {
                 if (it.id == id) it.copy(isRead = true) else it
             }
-            sessionStore.saveNotifications(updated)
+            sessionStore.saveNotifications(updated, uid)
             _uiState.update { it.copy(notifications = updated) }
         }
     }
 
     fun markAllNotificationsRead() {
         viewModelScope.launch {
+            val uid = _uiState.value.session?.userId
             val updated = _uiState.value.notifications.map { it.copy(isRead = true) }
-            sessionStore.saveNotifications(updated)
+            sessionStore.saveNotifications(updated, uid)
             _uiState.update { it.copy(notifications = updated) }
         }
     }
@@ -1126,9 +1415,10 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
     fun deleteNotifications(ids: Set<String>) {
         if (ids.isEmpty()) return
         viewModelScope.launch {
+            val uid = _uiState.value.session?.userId
             val prevCount = _uiState.value.notifications.size
             val updated = _uiState.value.notifications.filterNot { it.id in ids }
-            sessionStore.saveNotifications(updated)
+            sessionStore.saveNotifications(updated, uid)
             _uiState.update { it.copy(notifications = updated) }
             showToast(
                 if (ids.size >= prevCount || updated.isEmpty()) {
@@ -1647,18 +1937,20 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
                     val refreshedStore = runCatching { supabase.fetchStore(session) }.getOrNull() ?: storeSetup ?: _uiState.value.store
                     val events = runCatching { supabase.fetchVerificationEvents(session) }.getOrDefault(emptyList())
                     sessionStore.saveWorkspaceCache(refreshed, refreshedStore, _uiState.value.products)
+                    val shouldOfferPin = !sessionStore.hasAppPin() && !sessionStore.wasPinSetupOffered(session.userId)
                     _uiState.update {
                         it.copy(
                             verification = refreshed,
                             verificationEvents = events,
                             store = refreshedStore,
+                            showPinSetupPrompt = shouldOfferPin,
                             rootDestination = RootDestination.MAIN,
                             activeTab = MainTab.HOME,
                             openVerificationFromAccount = false,
                             isBusy = false
                         )
                     }
-                    evaluateVerificationStatusNotification(refreshed)
+                    evaluateVerificationStatusNotification(refreshed, session.userId)
                 }
                 showToast("Verification submitted! Status is now Under Review.")
             } catch (e: Exception) {
@@ -1911,7 +2203,7 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
     ) {
         if (editingProduct != null) {
             val unchanged = editingProduct.name.trim() == name.trim() &&
-                editingProduct.category.ifBlank { "General" } == category.ifBlank { "General" } &&
+                editingProduct.category.ifBlank { "Electronics" } == category.ifBlank { "Electronics" } &&
                 editingProduct.price == price &&
                 editingProduct.stock == stock &&
                 editingProduct.description.trim() == description.trim() &&
@@ -1944,7 +2236,7 @@ class SellerViewModel(application: Application) : AndroidViewModel(application) 
                         imagePaths = imagePaths,
                         videoPath = videoPath,
                         productCode = code,
-                        category = category.ifBlank { "General" },
+                        category = category.ifBlank { "Electronics" },
                         attributes = attributes
                     )
                     if (editingProduct == null) {

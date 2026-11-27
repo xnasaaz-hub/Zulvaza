@@ -448,19 +448,88 @@ object LocationHelper {
                     val nomState = addressObj?.optString("state").orEmpty()
                     val nomZip = addressObj?.optString("postcode").orEmpty().filter { it.isDigit() }.take(5)
                     val nomDisplay = json.optString("display_name")
+                    val resolvedCity = androidResult.city.ifBlank { nomCity }
+                    val resolvedState = androidResult.state.ifBlank { nomState }
+                    val resolvedAddress = androidResult.address.ifBlank { nomDisplay }
+                    val resolvedZip = androidResult.zipCode
+                        .ifBlank { nomZip }
+                        .ifBlank { lookupPakistanPostalCode(resolvedCity, resolvedState, resolvedAddress) }
                     return@withContext ReverseGeocodeResult(
-                        city = androidResult.city.ifBlank { nomCity },
+                        city = resolvedCity,
                         street = androidResult.street.ifBlank { nomStreet },
-                        state = androidResult.state.ifBlank { nomState },
-                        address = androidResult.address.ifBlank { nomDisplay },
-                        zipCode = androidResult.zipCode.ifBlank { nomZip }
+                        state = resolvedState,
+                        address = resolvedAddress,
+                        zipCode = resolvedZip
                     )
                 }
             }
         } catch (_: Exception) {
         }
-        androidResult
+        val fallbackZip = androidResult.zipCode.ifBlank {
+            lookupPakistanPostalCode(androidResult.city, androidResult.state, androidResult.address)
+        }
+        androidResult.copy(zipCode = fallbackZip)
     }
+
+    fun lookupPakistanPostalCode(city: String, state: String = "", address: String = ""): String {
+        val haystack = listOf(city, state, address)
+            .joinToString(" ")
+            .lowercase(Locale.US)
+        if (haystack.isBlank()) return ""
+        return PAKISTAN_CITY_POSTCODES.entries.firstOrNull { (key, _) ->
+            haystack.contains(key)
+        }?.value.orEmpty()
+    }
+
+    private val PAKISTAN_CITY_POSTCODES = linkedMapOf(
+        "quetta" to "87300",
+        "gwadar" to "91200",
+        "turbat" to "92600",
+        "khuzdar" to "89100",
+        "zhob" to "85200",
+        "sibi" to "82000",
+        "chaman" to "86000",
+        "loralai" to "84800",
+        "hub" to "90250",
+        "pishin" to "86300",
+        "lahore" to "54000",
+        "karachi" to "74200",
+        "islamabad" to "44000",
+        "rawalpindi" to "46000",
+        "peshawar" to "25000",
+        "faisalabad" to "38000",
+        "multan" to "60000",
+        "sialkot" to "51310",
+        "gujranwala" to "52250",
+        "hyderabad" to "71000",
+        "sukkur" to "65200",
+        "bahawalpur" to "63100",
+        "abbottabad" to "22010",
+        "mardan" to "23200",
+        "sargodha" to "40100",
+        "jhelum" to "49600",
+        "gujrat" to "50700",
+        "mirpur" to "10250",
+        "muzaffarabad" to "13100",
+        "gilgit" to "15100",
+        "skardu" to "16100",
+        "dera ghazi khan" to "32200",
+        "rahim yar khan" to "64200",
+        "sahiwal" to "57000",
+        "okara" to "56300",
+        "larkana" to "77150",
+        "nawabshah" to "67450",
+        "swat" to "19200",
+        "mingora" to "19130",
+        "kohat" to "26000",
+        "bannu" to "28100",
+        "dera ismail khan" to "29050",
+        "balochistan" to "87300",
+        "punjab" to "54000",
+        "sindh" to "74200",
+        "khyber pakhtunkhwa" to "25000",
+        "kpk" to "25000"
+    )
 }
 
 object NetworkMonitor {

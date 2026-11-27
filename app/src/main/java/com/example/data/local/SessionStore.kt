@@ -53,6 +53,22 @@ class SessionStore(private val context: Context) {
         val LAST_VERIFICATION_STATUS = stringPreferencesKey("last_verification_status")
         val LAST_NOTIFIED_UPDATE_TAG = stringPreferencesKey("last_notified_update_tag")
         val PERMISSIONS_PROMPT_DONE = booleanPreferencesKey("permissions_prompt_done")
+        val APP_PIN_HASH = stringPreferencesKey("app_pin_hash")
+        val APP_PIN_ENABLED = booleanPreferencesKey("app_pin_enabled")
+    }
+
+    private fun scopedKey(base: String, userId: String?): Preferences.Key<String> {
+        val clean = userId?.trim().orEmpty()
+        return if (clean.isNotBlank()) stringPreferencesKey("${base}_$clean") else stringPreferencesKey(base)
+    }
+
+    private fun pinOfferedKey(userId: String): Preferences.Key<Boolean> =
+        booleanPreferencesKey("pin_setup_offered_${userId.trim()}")
+
+    private fun hashPin(pin: String): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest("zulvaza_seller_pin_v1:${pin.trim()}".toByteArray(Charsets.UTF_8))
+        return digest.joinToString("") { "%02x".format(it) }
     }
 
     val themeModeFlow: Flow<ThemeMode> = context.sellerDataStore.data.map { ThemeMode.LIGHT }
@@ -120,9 +136,6 @@ class SessionStore(private val context: Context) {
             prefs.remove(Keys.CACHE_VERIFICATION)
             prefs.remove(Keys.CACHE_STORE)
             prefs.remove(Keys.CACHE_PRODUCTS)
-            prefs.remove(Keys.NOTIFICATIONS_JSON)
-            prefs.remove(Keys.KNOWN_DEVICE_IDS)
-            prefs.remove(Keys.LAST_VERIFICATION_STATUS)
         }
     }
 
@@ -135,8 +148,66 @@ class SessionStore(private val context: Context) {
         context.sellerDataStore.edit { it[Keys.PERMISSIONS_PROMPT_DONE] = true }
     }
 
-    suspend fun loadNotifications(): List<SellerNotificationItem> {
-        val raw = context.sellerDataStore.data.first()[Keys.NOTIFICATIONS_JSON] ?: return emptyList()
+    // ==================== 5-DIGIT APP LOCK PIN ====================
+
+    suspend fun hasAppPin(): Boolean {
+        val hash = context.sellerDataStore.data.first()[Keys.APP_PIN_HASH]
+        return !hash.isNullOrBlank()
+    }
+
+    suspend fun isAppPinEnabled(): Boolean {
+        val prefs = context.sellerDataStore.data.first()
+        val hash = prefs[Keys.APP_PIN_HASH]
+        val enabled = prefs[Keys.APP_PIN_ENABLED] ?: false
+        return enabled && !hash.isNullOrBlank()
+    }
+
+    suspend fun setAppPin(pin: String, enabled: Boolean = true) {
+        val clean = pin.filter { it.isDigit() }
+        require(clean.length == 5) { "PIN must be 5 digits" }
+        context.sellerDataStore.edit { prefs ->
+            prefs[Keys.APP_PIN_HASH] = hashPin(clean)
+            prefs[Keys.APP_PIN_ENABLED] = enabled
+        }
+    }
+
+    suspend fun verifyAppPin(pin: String): Boolean {
+        val clean = pin.filter { it.isDigit() }
+        if (clean.length != 5) return false
+        val stored = context.sellerDataStore.data.first()[Keys.APP_PIN_HASH] ?: return false
+        return stored == hashPin(clean)
+    }
+
+    suspend fun setAppPinEnabled(enabled: Boolean) {
+        context.sellerDataStore.edit { prefs ->
+            val hasHash = !prefs[Keys.APP_PIN_HASH].isNullOrBlank()
+            prefs[Keys.APP_PIN_ENABLED] = enabled && hasHash
+        }
+    }
+
+    suspend fun deleteAppPin() {
+        context.sellerDataStore.edit { prefs ->
+            prefs.remove(Keys.APP_PIN_HASH)
+            prefs[Keys.APP_PIN_ENABLED] = false
+        }
+    }
+
+    suspend fun wasPinSetupOffered(userId: String): Boolean {
+        if (userId.isBlank()) return true
+        return context.sellerDataStore.data.first()[pinOfferedKey(userId)] ?: false
+    }
+
+    suspend fun markPinSetupOffered(userId: String) {
+        if (userId.isBlank()) return
+        context.sellerDataStore.edit { it[pinOfferedKey(userId)] = true }
+    }
+
+    suspend fun loadNotifications(userId: String? = null): List<SellerNotificationItem> {
+        val prefs = context.sellerDataStore.data.first()
+        val uid = userId ?: prefs[Keys.USER_ID]
+        val raw = prefs[scopedKey("notifications_json", uid)]
+            ?: prefs[Keys.NOTIFICATIONS_JSON]
+            ?: return emptyList()
         return try {
             val arr = JSONArray(raw)
             buildList {
@@ -160,7 +231,7 @@ class SessionStore(private val context: Context) {
         }
     }
 
-    suspend fun saveNotifications(items: List<SellerNotificationItem>) {
+    suspend fun saveNotifications(items: List<SellerNotificationItem>, userId: String? = null) {
         val arr = JSONArray().apply {
             items.take(100).forEach { n ->
                 put(JSONObject().apply {
@@ -174,11 +245,18 @@ class SessionStore(private val context: Context) {
                 })
             }
         }
-        context.sellerDataStore.edit { it[Keys.NOTIFICATIONS_JSON] = arr.toString() }
+        context.sellerDataStore.edit { prefs ->
+            val uid = userId ?: prefs[Keys.USER_ID]
+            prefs[scopedKey("notifications_json", uid)] = arr.toString()
+        }
     }
 
-    suspend fun loadKnownDeviceIds(): Set<String>? {
-        val raw = context.sellerDataStore.data.first()[Keys.KNOWN_DEVICE_IDS] ?: return null
+    suspend fun loadKnownDeviceIds(userId: String? = null): Set<String>? {
+        val prefs = context.sellerDataStore.data.first()
+        val uid = userId ?: prefs[Keys.USER_ID]
+        val raw = prefs[scopedKey("known_device_ids", uid)]
+            ?: prefs[Keys.KNOWN_DEVICE_IDS]
+            ?: return null
         return try {
             val arr = JSONArray(raw)
             buildSet {
@@ -192,17 +270,26 @@ class SessionStore(private val context: Context) {
         }
     }
 
-    suspend fun saveKnownDeviceIds(ids: Set<String>) {
+    suspend fun saveKnownDeviceIds(ids: Set<String>, userId: String? = null) {
         val arr = JSONArray().apply { ids.forEach { put(it) } }
-        context.sellerDataStore.edit { it[Keys.KNOWN_DEVICE_IDS] = arr.toString() }
+        context.sellerDataStore.edit { prefs ->
+            val uid = userId ?: prefs[Keys.USER_ID]
+            prefs[scopedKey("known_device_ids", uid)] = arr.toString()
+        }
     }
 
-    suspend fun getLastKnownVerificationStatus(): String? {
-        return context.sellerDataStore.data.first()[Keys.LAST_VERIFICATION_STATUS]
+    suspend fun getLastKnownVerificationStatus(userId: String? = null): String? {
+        val prefs = context.sellerDataStore.data.first()
+        val uid = userId ?: prefs[Keys.USER_ID]
+        return prefs[scopedKey("last_verification_status", uid)]
+            ?: prefs[Keys.LAST_VERIFICATION_STATUS]
     }
 
-    suspend fun setLastKnownVerificationStatus(rawStatus: String) {
-        context.sellerDataStore.edit { it[Keys.LAST_VERIFICATION_STATUS] = rawStatus }
+    suspend fun setLastKnownVerificationStatus(rawStatus: String, userId: String? = null) {
+        context.sellerDataStore.edit { prefs ->
+            val uid = userId ?: prefs[Keys.USER_ID]
+            prefs[scopedKey("last_verification_status", uid)] = rawStatus
+        }
     }
 
     suspend fun getLastNotifiedUpdateTag(): String? {

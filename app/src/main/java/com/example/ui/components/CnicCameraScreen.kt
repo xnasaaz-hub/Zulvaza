@@ -75,7 +75,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
@@ -85,7 +84,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -124,10 +122,13 @@ import com.example.data.model.CnicCaptureResult
 import com.example.data.model.CnicDualScanResult
 import com.example.ui.theme.SuccessGreen
 import com.example.ui.theme.ZulvazaOrange
+import com.example.util.CnicMatchValidator
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetectorOptions
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.delay
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
@@ -696,15 +697,12 @@ fun CnicLiveCameraOverlayScreen(
     var isCapturing by remember { mutableStateOf(false) }
     var showSuccessTick by remember { mutableStateOf(false) }
     var capturedReadyResult by remember { mutableStateOf<CnicCaptureResult?>(null) }
-    var detectionProgress by remember { mutableFloatStateOf(0f) }
     var cardDetectedState by remember { mutableStateOf(false) }
     var featureReadyState by remember { mutableStateOf(false) }
-    var steadyState by remember { mutableStateOf(false) }
     var detectedFaceBoxNorm by remember { mutableStateOf<RectF?>(null) }
-    var detectedFaceSideLabel by remember { mutableStateOf<String?>(null) }
     var liveHint by remember {
         mutableStateOf(
-            if (isFrontSide) "Place CNIC Front inside the frame (face on left or right)"
+            if (isFrontSide) "Place CNIC Front inside the frame"
             else "Place CNIC Back inside the frame"
         )
     }
@@ -718,10 +716,14 @@ fun CnicLiveCameraOverlayScreen(
                 .build()
         )
     }
+    val textRecognizer = remember {
+        TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+    }
 
     DisposableEffect(Unit) {
         onDispose {
             runCatching { cardFaceDetector.close() }
+            runCatching { textRecognizer.close() }
         }
     }
 
@@ -910,6 +912,7 @@ fun CnicLiveCameraOverlayScreen(
 
                                     var featureMatched = false
                                     var upsideDownFaceDetected = false
+                                    var wrongSideDetected = false
                                     var faceNormRect: RectF? = null
                                     var faceSideStr: String? = null
 
@@ -936,8 +939,35 @@ fun CnicLiveCameraOverlayScreen(
                                                 faceNormRect = detection.normRect
                                                 faceSideStr = detection.sidePosition
                                             } else {
-                                                // Back side: verify rich card back pattern across regions (QR/address/signature)
-                                                featureMatched = hasCnicBackCardTexture(analysisBitmap)
+                                                // Back side: verify rich card texture + ensure it isn't actually Front side
+                                                val backTextureOk = hasCnicBackCardTexture(analysisBitmap)
+                                                val frontDetection = detectPrintedFaceOnCardBitmap(
+                                                    detector = cardFaceDetector,
+                                                    cardBitmap = analysisBitmap
+                                                )
+                                                if (frontDetection.faceFound) {
+                                                    wrongSideDetected = true
+                                                    featureMatched = false
+                                                } else {
+                                                    featureMatched = backTextureOk
+                                                }
+                                            }
+
+                                            if (!featureMatched && !upsideDownFaceDetected && !wrongSideDetected) {
+                                                val recognizedText = runCatching {
+                                                    Tasks.await(
+                                                        textRecognizer.process(InputImage.fromBitmap(analysisBitmap, 0)),
+                                                        450,
+                                                        TimeUnit.MILLISECONDS
+                                                    ).text
+                                                }.getOrDefault("")
+                                                if (recognizedText.isNotBlank()) {
+                                                    wrongSideDetected = CnicMatchValidator.isWrongCnicSide(
+                                                        expectedSide = sideLabel,
+                                                        rawText = recognizedText,
+                                                        hasFaceDetected = false
+                                                    )
+                                                }
                                             }
                                         }
                                     }
@@ -950,72 +980,53 @@ fun CnicLiveCameraOverlayScreen(
                                                 confirmedCardHits = 0
                                                 cardDetectedState = false
                                                 featureReadyState = false
-                                                steadyState = false
                                                 detectedFaceBoxNorm = null
-                                                detectedFaceSideLabel = null
-                                                detectionProgress = 0.05f
                                                 liveHint = "Too dark — turn on flash or move to brighter light"
                                             }
                                             !cardStructureSeen -> {
                                                 confirmedCardHits = 0
                                                 cardDetectedState = false
                                                 featureReadyState = false
-                                                steadyState = false
                                                 detectedFaceBoxNorm = null
-                                                detectedFaceSideLabel = null
-                                                detectionProgress = 0.16f
-                                                liveHint = "Align your physical CNIC $sideLabel inside the card frame"
+                                                liveHint = "Place CNIC $sideLabel inside the frame"
+                                            }
+                                            wrongSideDetected -> {
+                                                confirmedCardHits = 0
+                                                cardDetectedState = true
+                                                featureReadyState = false
+                                                detectedFaceBoxNorm = null
+                                                liveHint = "Wrong side detected — flip card to CNIC $sideLabel"
                                             }
                                             isFrontSide && upsideDownFaceDetected && !featureMatched -> {
                                                 confirmedCardHits = 0
                                                 cardDetectedState = true
                                                 featureReadyState = false
-                                                steadyState = metrics.isSteady
                                                 detectedFaceBoxNorm = null
-                                                detectedFaceSideLabel = null
-                                                detectionProgress = 0.35f
-                                                liveHint = "Card appears upside down — turn CNIC right-side up"
+                                                liveHint = "Card is upside down — rotate CNIC right-side up"
                                             }
                                             !featureMatched -> {
                                                 confirmedCardHits = (confirmedCardHits - 1).coerceAtLeast(0)
                                                 cardDetectedState = true
                                                 featureReadyState = false
-                                                steadyState = metrics.isSteady
                                                 detectedFaceBoxNorm = null
-                                                detectedFaceSideLabel = null
-                                                detectionProgress = 0.40f
                                                 liveHint = if (isFrontSide) {
-                                                    "Card seen — keep the CNIC portrait face visible (left or right)"
+                                                    "Keep the CNIC portrait face clear inside the frame"
                                                 } else {
-                                                    "Card seen — keep the CNIC back details & QR code in view"
+                                                    "Keep the CNIC Back details & QR code inside the frame"
                                                 }
                                             }
                                             !metrics.isSteady -> {
                                                 cardDetectedState = true
                                                 featureReadyState = true
-                                                steadyState = false
                                                 detectedFaceBoxNorm = faceNormRect
-                                                detectedFaceSideLabel = faceSideStr
-                                                detectionProgress = 0.72f
-                                                liveHint = if (isFrontSide && faceSideStr != null) {
-                                                    "Card & face detected ($faceSideStr)! Hold steady..."
-                                                } else {
-                                                    "CNIC $sideLabel detected! Hold steady..."
-                                                }
+                                                liveHint = "Hold steady..."
                                             }
                                             else -> {
                                                 confirmedCardHits++
                                                 cardDetectedState = true
                                                 featureReadyState = true
-                                                steadyState = true
                                                 detectedFaceBoxNorm = faceNormRect
-                                                detectedFaceSideLabel = faceSideStr
-                                                detectionProgress = (0.65f + confirmedCardHits * 0.175f).coerceIn(0f, 1f)
-                                                liveHint = if (isFrontSide && faceSideStr != null) {
-                                                    "Card & face locked ($faceSideStr) — taking photo..."
-                                                } else {
-                                                    "CNIC $sideLabel locked — taking photo..."
-                                                }
+                                                liveHint = "Locked! Capturing CNIC $sideLabel..."
                                                 if (confirmedCardHits >= 2) {
                                                     triggerAutoCapture(
                                                         hasFace = featureMatched,
@@ -1252,174 +1263,44 @@ fun CnicLiveCameraOverlayScreen(
                         )
                     }
                 }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                // 2-Side Progress Dots
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    val isBack = sideLabel.equals("Back", ignoreCase = true)
-                    CnicSideDotPill("1. Front", active = !isBack, done = isBack)
-                    CnicSideDotPill("2. Back", active = isBack, done = false)
-                }
             }
 
-            // Bottom Smart Detection Status Card (3-Pill Readiness + Live Hint)
+            // Minimal floating status pill at bottom (no 3-chip dark box or progress bars)
             if (!showSuccessTick) {
                 Surface(
-                    color = Color(0xFF0F172A).copy(alpha = 0.92f),
-                    shape = RoundedCornerShape(24.dp),
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
+                    color = Color(0xFF0F172A).copy(alpha = 0.88f),
+                    shape = RoundedCornerShape(50),
+                    border = BorderStroke(
+                        1.dp,
+                        if (cardDetectedState && featureReadyState) SuccessGreen.copy(alpha = 0.5f)
+                        else Color.White.copy(alpha = 0.16f)
+                    ),
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 22.dp)
+                        .padding(horizontal = 24.dp, vertical = 28.dp)
                 ) {
-                    Column(
-                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
+                    Row(
+                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
                     ) {
-                        if (cameraError != null) {
-                            Text(
-                                text = cameraError!!,
-                                color = Color(0xFFFCA5A5),
-                                style = MaterialTheme.typography.bodySmall,
-                                textAlign = TextAlign.Center
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                        }
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            CnicReadinessChip("Card", cardDetectedState, Modifier.weight(1f))
-                            CnicReadinessChip(
-                                label = if (isFrontSide) {
-                                    if (detectedFaceSideLabel != null) "Face (${detectedFaceSideLabel})" else "CNIC Face"
-                                } else {
-                                    "Back Pattern"
-                                },
-                                ready = featureReadyState,
-                                modifier = Modifier.weight(1f)
-                            )
-                            CnicReadinessChip("Steady", steadyState, Modifier.weight(1f))
-                        }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            Icon(
-                                imageVector = if (isFrontSide) Icons.Default.Face else Icons.Default.DocumentScanner,
-                                contentDescription = null,
-                                tint = if (cardDetectedState && featureReadyState) SuccessGreen else ZulvazaOrange,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = liveHint,
-                                color = Color.White,
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.SemiBold,
-                                textAlign = TextAlign.Center
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(10.dp))
-                        LinearProgressIndicator(
-                            progress = { detectionProgress },
-                            color = if (cardDetectedState && featureReadyState) SuccessGreen else ZulvazaOrange,
-                            trackColor = Color.White.copy(alpha = 0.20f),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(6.dp)
-                                .clip(CircleShape)
+                        Icon(
+                            imageVector = if (cardDetectedState && featureReadyState) Icons.Default.CheckCircle else Icons.Default.DocumentScanner,
+                            contentDescription = null,
+                            tint = if (cameraError != null) Color(0xFFFCA5A5) else if (cardDetectedState && featureReadyState) SuccessGreen else ZulvazaOrange,
+                            modifier = Modifier.size(18.dp)
                         )
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = if (isFrontSide) {
-                                "Photo is taken automatically as soon as the card & printed face are locked — text OCR runs in background after upload."
-                            } else {
-                                "Photo is taken automatically once CNIC back is aligned — text OCR runs in background after upload."
-                            },
-                            color = Color.White.copy(alpha = 0.68f),
-                            style = MaterialTheme.typography.labelSmall,
+                            text = cameraError ?: liveHint,
+                            color = if (cameraError != null) Color(0xFFFCA5A5) else Color.White,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
                             textAlign = TextAlign.Center
                         )
                     }
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun CnicSideDotPill(label: String, active: Boolean, done: Boolean) {
-    Surface(
-        color = when {
-            done -> SuccessGreen.copy(alpha = 0.24f)
-            active -> ZulvazaOrange.copy(alpha = 0.26f)
-            else -> Color.White.copy(alpha = 0.08f)
-        },
-        shape = RoundedCornerShape(50),
-        border = BorderStroke(
-            1.dp,
-            when {
-                done -> SuccessGreen.copy(alpha = 0.7f)
-                active -> ZulvazaOrange
-                else -> Color.White.copy(alpha = 0.2f)
-            }
-        )
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            if (done) {
-                Icon(Icons.Default.Check, contentDescription = null, tint = SuccessGreen, modifier = Modifier.size(13.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-            }
-            Text(
-                text = label,
-                color = Color.White,
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = if (active || done) FontWeight.Bold else FontWeight.Medium
-            )
-        }
-    }
-}
-
-@Composable
-private fun CnicReadinessChip(label: String, ready: Boolean, modifier: Modifier = Modifier) {
-    Surface(
-        color = if (ready) SuccessGreen.copy(alpha = 0.18f) else Color.White.copy(alpha = 0.06f),
-        shape = RoundedCornerShape(10.dp),
-        border = BorderStroke(1.dp, if (ready) SuccessGreen.copy(alpha = 0.65f) else Color.White.copy(alpha = 0.14f)),
-        modifier = modifier
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = if (ready) Icons.Default.CheckCircle else Icons.Default.DocumentScanner,
-                contentDescription = null,
-                tint = if (ready) SuccessGreen else Color.White.copy(alpha = 0.45f),
-                modifier = Modifier.size(13.dp)
-            )
-            Spacer(modifier = Modifier.width(5.dp))
-            Text(
-                text = label,
-                color = if (ready) Color.White else Color.White.copy(alpha = 0.65f),
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = if (ready) FontWeight.Bold else FontWeight.Medium,
-                maxLines = 1
-            )
         }
     }
 }

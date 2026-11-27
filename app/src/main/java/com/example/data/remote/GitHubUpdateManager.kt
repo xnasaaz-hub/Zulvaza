@@ -119,6 +119,11 @@ object GitHubUpdateManager {
         client.newCall(listReq).execute().use { resp ->
             val body = resp.body?.string().orEmpty()
             if (!resp.isSuccessful) {
+                if (resp.code == 404) {
+                    throw IllegalStateException(
+                        "Repository releases not found (404) for $cleanSlug. Make sure the GitHub repository is Public and at least one APK release is published."
+                    )
+                }
                 val msg = runCatching { JSONObject(body).optString("message") }.getOrNull()
                     ?.takeIf { it.isNotBlank() }
                     ?: "Update check failed (${resp.code})"
@@ -131,7 +136,7 @@ object GitHubUpdateManager {
                     return rel
                 }
             }
-            throw IllegalStateException("No published app release found yet. Run the GitHub APK build workflow first.")
+            throw IllegalStateException("No published app release found yet for $cleanSlug. Run the GitHub APK build workflow first.")
         }
     }
 

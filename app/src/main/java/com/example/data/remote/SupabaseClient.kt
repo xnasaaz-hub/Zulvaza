@@ -249,7 +249,7 @@ class SupabaseClient {
 
     suspend fun sendPasswordReset(email: String) {
         val payload = JSONObject().apply {
-            put("email", email.trim())
+            put("email", email.trim().lowercase())
         }
         executeJson(
             method = "POST",
@@ -258,13 +258,12 @@ class SupabaseClient {
         )
     }
 
-    suspend fun verifyRecoveryOtpAndSetPassword(
+    suspend fun verifyRecoveryOtp(
         email: String,
-        token: String,
-        newPassword: String
+        token: String
     ): UserSession {
         val verifyPayload = JSONObject().apply {
-            put("email", email.trim())
+            put("email", email.trim().lowercase())
             put("token", token.trim())
             put("type", "recovery")
         }
@@ -273,9 +272,22 @@ class SupabaseClient {
             url = "${SupabaseConfig.SUPABASE_URL}/auth/v1/verify",
             bodyJson = verifyPayload.toString()
         )
-        val session = parseSession(JSONObject(resp))
-        updatePassword(session, newPassword)
-        return session
+        return parseSession(JSONObject(resp))
+    }
+
+    suspend fun updatePasswordWithRecoveryToken(
+        accessToken: String,
+        newPassword: String
+    ) {
+        val payload = JSONObject().apply {
+            put("password", newPassword)
+        }
+        executeJson(
+            method = "PUT",
+            url = "${SupabaseConfig.SUPABASE_URL}/auth/v1/user",
+            bodyJson = payload.toString(),
+            accessToken = accessToken
+        )
     }
 
     suspend fun refreshSession(refreshToken: String): UserSession {
@@ -1007,7 +1019,7 @@ class SupabaseClient {
             put("image_paths", images)
             put("video_path", product.videoPath ?: JSONObject.NULL)
             put("product_code", product.productCode)
-            put("category", product.category.ifBlank { "General" })
+            put("category", product.category.ifBlank { "Electronics" })
             put("attributes", attrs)
         }
     }
@@ -1083,7 +1095,7 @@ class SupabaseClient {
             put("stock", draft.stock ?: JSONObject.NULL)
             put("image_paths", images)
             put("video_path", draft.videoPath ?: JSONObject.NULL)
-            put("category", draft.category.ifBlank { "General" })
+            put("category", draft.category.ifBlank { "Electronics" })
             put("attributes", attrs)
         }
         val resp = if (draft.id.isNotBlank()) {

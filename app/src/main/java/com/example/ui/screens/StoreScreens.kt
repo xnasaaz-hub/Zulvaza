@@ -1,7 +1,6 @@
 package com.example.ui.screens
 
 import android.Manifest
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -44,10 +43,8 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.PhotoLibrary
@@ -73,7 +70,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -132,14 +128,14 @@ fun StoreProfileScreen(
     onSaveStoreMedia: (Boolean, String) -> Unit,
     onDeleteStoreMedia: (Boolean) -> Unit,
     onEditStore: () -> Unit,
+    onShareStore: () -> Unit,
     onOpenProductDetail: (ProductItem) -> Unit,
     onToast: (String, Boolean) -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val activeSocials = store?.socialProfiles?.filter { it.active && it.url.isNotBlank() }.orEmpty()
-    val approvedCount = products.count { it.status == ProductStatus.APPROVED }
-    val totalSales = products.sumOf { it.sales }
+    val approvedProducts = remember(products) { products.filter { it.status == ProductStatus.APPROVED } }
     val slugHandle = store?.slug?.takeIf { it.isNotBlank() }
     val storefrontUrl = if (slugHandle != null) {
         "https://zulvaza.com/shop/$slugHandle"
@@ -153,7 +149,6 @@ fun StoreProfileScreen(
             .joinToString(", ")
     }
 
-    var selectedSectionTab by remember { mutableIntStateOf(0) } // 0 = About, 1 = Products
     var uploadingLogo by remember { mutableStateOf(false) }
     var uploadingBanner by remember { mutableStateOf(false) }
     var mediaSheetTarget by remember { mutableStateOf<Pair<Boolean, String?>?>(null) }
@@ -364,17 +359,6 @@ fun StoreProfileScreen(
 
                 if (!currentMediaUrl.isNullOrBlank()) {
                     StoreMediaSheetActionRow(
-                        icon = Icons.Default.Crop,
-                        label = "Crop & Edit",
-                        tint = ZulvazaOrange,
-                        testTag = if (isLogo) "crop_store_logo_button" else "crop_store_banner_button",
-                        onClick = {
-                            mediaSheetTarget = null
-                            cropMediaTarget = isLogo to Uri.parse(currentMediaUrl)
-                        }
-                    )
-
-                    StoreMediaSheetActionRow(
                         icon = Icons.Default.DeleteOutline,
                         label = "Delete Photo",
                         tint = ErrorRed,
@@ -565,20 +549,7 @@ fun StoreProfileScreen(
                 }
 
                 Button(
-                    onClick = {
-                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            putExtra(
-                                Intent.EXTRA_SUBJECT,
-                                store?.shopName?.takeIf { it.isNotBlank() } ?: "ZULVAZA Storefront"
-                            )
-                            putExtra(
-                                Intent.EXTRA_TEXT,
-                                "Shop ${store?.shopName?.takeIf { it.isNotBlank() } ?: "our store"} on ZULVAZA: $storefrontUrl"
-                            )
-                        }
-                        context.startActivity(Intent.createChooser(shareIntent, "Share Storefront"))
-                    },
+                    onClick = onShareStore,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = ZulvazaNavy,
                         contentColor = Color.White
@@ -694,9 +665,91 @@ fun StoreProfileScreen(
                 }
             }
 
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Instagram / Facebook-style Bio & About directly below location & handle
+            if (!store?.bio.isNullOrBlank()) {
+                Text(
+                    text = store!!.bio,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+            }
+
+            Text(
+                text = store?.introduction?.takeIf { it.isNotBlank() }
+                    ?: "Tap Edit Store to add your store bio, specialties, and delivery information.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            if (activeSocials.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    activeSocials.forEach { sp ->
+                        SocialBrandBadge(
+                            platform = sp.platform,
+                            label = SocialPlatform.fromKey(sp.platform).displayName,
+                            onClick = { openExternalUrl(context, sp.url) }
+                        )
+                    }
+                }
+            }
+
+            if (sellerLocationLabel.isNotBlank()) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Surface(
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = RoundedCornerShape(16.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = ZulvazaOrange.copy(alpha = 0.12f),
+                            modifier = Modifier.size(34.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.LocationOn,
+                                    contentDescription = null,
+                                    tint = ZulvazaOrange,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "Store Location",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = sellerLocationLabel,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.testTag("store_about_location")
+                            )
+                        }
+                    }
+                }
+            }
+
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Stats Strip
+            // Compact Profile Metrics (Listings & Approved — zero Sales)
             Card(
                 shape = RoundedCornerShape(20.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -710,166 +763,56 @@ fun StoreProfileScreen(
                     horizontalArrangement = Arrangement.SpaceEvenly
                 ) {
                     StoreStatColumn(products.size.toString(), "Listings")
-                    StoreStatColumn(approvedCount.toString(), "Live")
-                    StoreStatColumn(totalSales.toString(), "Sales")
+                    StoreStatColumn(approvedProducts.size.toString(), "Approved")
                 }
             }
 
+            Spacer(modifier = Modifier.height(18.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.7f))
             Spacer(modifier = Modifier.height(14.dp))
 
-            // About / Products Segmented Switcher
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                modifier = Modifier.fillMaxWidth()
+            // Approved Storefront Products Feed directly below
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    StoreSectionTabPill(
-                        label = "About",
-                        icon = Icons.Default.Info,
-                        selected = selectedSectionTab == 0,
-                        onClick = { selectedSectionTab = 0 },
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("store_tab_about")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Inventory2,
+                        contentDescription = null,
+                        tint = ZulvazaOrange,
+                        modifier = Modifier.size(18.dp)
                     )
-                    StoreSectionTabPill(
-                        label = "Products (${products.size})",
-                        icon = Icons.Default.Inventory2,
-                        selected = selectedSectionTab == 1,
-                        onClick = { selectedSectionTab = 1 },
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("store_tab_products")
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Approved Products (${approvedProducts.size})",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
                     )
                 }
             }
 
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
-            if (selectedSectionTab == 0) {
-                // ================= ABOUT TAB =================
-                Card(
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Text(
-                            text = "Store Bio",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = store?.bio?.takeIf { it.isNotBlank() }
-                                ?: "Add a crisp store bio so shoppers recognize your brand immediately.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = if (store?.bio.isNullOrBlank()) {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            } else {
-                                MaterialTheme.colorScheme.onSurface
-                            }
-                        )
-
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f))
-
-                        Text(
-                            text = "About Store",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = store?.introduction?.takeIf { it.isNotBlank() }
-                                ?: "Tap Edit Store to add your brand story, specialties, and delivery details.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-
-                        if (sellerLocationLabel.isNotBlank()) {
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f))
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Surface(
-                                    shape = CircleShape,
-                                    color = ZulvazaOrange.copy(alpha = 0.12f),
-                                    modifier = Modifier.size(36.dp)
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Icon(
-                                            imageVector = Icons.Default.LocationOn,
-                                            contentDescription = null,
-                                            tint = ZulvazaOrange,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    }
-                                }
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Column {
-                                    Text(
-                                        text = "Registered Business Location",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    Text(
-                                        text = sellerLocationLabel,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = FontWeight.SemiBold,
-                                        modifier = Modifier.testTag("store_about_location")
-                                    )
-                                }
-                            }
-                        }
-
-                        if (activeSocials.isNotEmpty()) {
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f))
-                            Text(
-                                text = "Social Channels",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .horizontalScroll(rememberScrollState()),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                activeSocials.forEach { sp ->
-                                    SocialBrandBadge(
-                                        platform = sp.platform,
-                                        label = SocialPlatform.fromKey(sp.platform).displayName,
-                                        onClick = { openExternalUrl(context, sp.url) }
-                                    )
-                                }
-                            }
-                        }
+            if (approvedProducts.isEmpty()) {
+                EmptyStateCard(
+                    icon = Icons.Default.Inventory2,
+                    title = if (products.isEmpty()) "No Products Yet" else "No Approved Products Yet",
+                    subtitle = if (products.isEmpty()) {
+                        "Add products from the Add Product tab to display them on your public store profile."
+                    } else {
+                        "Your ${products.size} submitted product(s) will appear here automatically once approved."
                     }
-                }
+                )
             } else {
-                // ================= PRODUCTS TAB =================
-                if (products.isEmpty()) {
-                    EmptyStateCard(
-                        icon = Icons.Default.Inventory2,
-                        title = "No Products Yet",
-                        subtitle = "Add your first product from the Add Product tab to showcase it in your store."
-                    )
-                } else {
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        products.forEach { product ->
-                            StoreProductRowCard(
-                                product = product,
-                                imageUrl = product.imagePaths.firstOrNull()?.let(resolveProductImage),
-                                onClick = { onOpenProductDetail(product) }
-                            )
-                        }
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    approvedProducts.forEach { product ->
+                        StoreProductRowCard(
+                            product = product,
+                            imageUrl = product.imagePaths.firstOrNull()?.let(resolveProductImage),
+                            onClick = { onOpenProductDetail(product) }
+                        )
                     }
                 }
             }
@@ -920,47 +863,6 @@ private fun StoreMediaSheetActionRow(
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurfaceVariant
         )
-    }
-}
-
-@Composable
-private fun StoreSectionTabPill(
-    label: String,
-    icon: ImageVector,
-    selected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        color = if (selected) MaterialTheme.colorScheme.surface else Color.Transparent,
-        shadowElevation = if (selected) 2.dp else 0.dp,
-        shape = RoundedCornerShape(12.dp),
-        modifier = modifier
-            .defaultMinSize(minHeight = 44.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .clickable(onClick = onClick)
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = if (selected) ZulvazaOrange else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(16.dp)
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
     }
 }
 
@@ -1111,7 +1013,7 @@ fun EditStoreSheetContent(
 
         Spacer(modifier = Modifier.height(6.dp))
         Text(
-            text = "Tap your logo or cover banner on My Store to preview, take photo, crop, change, or delete.",
+            text = "Tap your logo or cover banner on My Store to preview, upload a new photo, or delete.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

@@ -80,7 +80,9 @@ import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.data.model.PasswordStrength
 import com.example.ui.components.OtpCodeBoxes
+import com.example.ui.state.RecoveryStep
 import com.example.ui.theme.ErrorRed
+import com.example.ui.theme.ErrorRedSoft
 import com.example.ui.theme.SuccessGreen
 import com.example.ui.theme.WarningAmber
 import com.example.ui.theme.ZulvazaNavy
@@ -356,30 +358,30 @@ fun SignUpScreen(
 @Composable
 fun LoginScreen(
     requiresMfa: Boolean,
-    loginOtpPendingEmail: String?,
-    recoveryPendingEmail: String?,
+    recoveryStep: RecoveryStep,
+    recoveryEmail: String,
+    recoveryErrorMessage: String?,
     isBusy: Boolean,
     onLogin: (email: String, password: String) -> Unit,
-    onSendEmailOtp: (email: String) -> Unit,
-    onVerifyEmailOtp: (email: String, code: String) -> Unit,
-    onCancelEmailOtp: () -> Unit,
+    onOpenForgotPassword: (String) -> Unit,
     onSendPasswordReset: (email: String) -> Unit,
-    onVerifyRecoveryReset: (email: String, code: String, newPassword: String) -> Unit,
+    onVerifyRecoveryOtp: (code: String) -> Unit,
+    onResendRecoveryOtp: () -> Unit,
+    onSaveRecoveredPassword: (newPassword: String) -> Unit,
+    onChangeRecoveryEmail: () -> Unit,
     onCancelRecovery: () -> Unit,
     onVerifyMfa: (code: String) -> Unit,
     onCancelMfa: () -> Unit,
     onGoToSignUp: () -> Unit,
     onBack: () -> Unit
 ) {
-    var showForgotPasswordForm by remember { mutableStateOf(false) }
-
-    val inSubFlow = requiresMfa || recoveryPendingEmail != null || showForgotPasswordForm
+    val inSubFlow = requiresMfa || recoveryStep != RecoveryStep.NONE
     if (inSubFlow) {
         BackHandler {
             when {
                 requiresMfa -> onCancelMfa()
-                recoveryPendingEmail != null -> onCancelRecovery()
-                showForgotPasswordForm -> showForgotPasswordForm = false
+                recoveryStep == RecoveryStep.OTP -> onChangeRecoveryEmail()
+                else -> onCancelRecovery()
             }
         }
     }
@@ -390,10 +392,29 @@ fun LoginScreen(
     var showPassword by remember { mutableStateOf(false) }
     var totpCode by remember { mutableStateOf("") }
 
-    var recoveryEmail by remember { mutableStateOf("") }
-    var recoveryCode by remember { mutableStateOf("") }
-    var recoveryNewPassword by remember { mutableStateOf("") }
-    var showRecoveryPassword by remember { mutableStateOf(false) }
+    var emailInput by remember(recoveryStep, recoveryEmail) { mutableStateOf(recoveryEmail) }
+    var recoveryOtp by remember(recoveryStep, recoveryEmail) { mutableStateOf("") }
+    var recoveryResendSeconds by remember { mutableIntStateOf(60) }
+    var newPassword by remember(recoveryStep) { mutableStateOf("") }
+    var confirmNewPassword by remember(recoveryStep) { mutableStateOf("") }
+    var showNewPassword by remember { mutableStateOf(false) }
+    var showConfirmNewPassword by remember { mutableStateOf(false) }
+
+    LaunchedEffect(recoveryErrorMessage) {
+        if (recoveryErrorMessage != null && recoveryStep == RecoveryStep.OTP) {
+            recoveryOtp = ""
+        }
+    }
+
+    LaunchedEffect(recoveryStep, recoveryEmail) {
+        if (recoveryStep == RecoveryStep.OTP) {
+            recoveryResendSeconds = 60
+            while (recoveryResendSeconds > 0) {
+                delay(1000)
+                recoveryResendSeconds--
+            }
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -416,8 +437,8 @@ fun LoginScreen(
                         onClick = {
                             when {
                                 requiresMfa -> onCancelMfa()
-                                recoveryPendingEmail != null -> onCancelRecovery()
-                                showForgotPasswordForm -> showForgotPasswordForm = false
+                                recoveryStep == RecoveryStep.OTP -> onChangeRecoveryEmail()
+                                else -> onCancelRecovery()
                             }
                         }
                     ) {
@@ -497,7 +518,108 @@ fun LoginScreen(
                     }
                 }
 
-                recoveryPendingEmail != null -> {
+                // Step 1: Enter email -> Send reset code
+                recoveryStep == RecoveryStep.EMAIL -> {
+                    val emailValid = Patterns.EMAIL_ADDRESS.matcher(emailInput.trim()).matches()
+                    Surface(
+                        shape = RoundedCornerShape(24.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                        shadowElevation = 2.dp,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(22.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = ZulvazaOrange.copy(alpha = 0.14f),
+                                    modifier = Modifier.size(48.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(Icons.Default.LockReset, contentDescription = null, tint = ZulvazaOrange)
+                                    }
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text("Forgot Password?", style = MaterialTheme.typography.headlineSmall)
+                                    Text(
+                                        "Step 1 of 3 • Enter your email",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = ZulvazaOrange,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text(
+                                "Enter your registered seller email. We will send a 6-digit verification code to reset your password.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (recoveryErrorMessage != null) {
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Surface(
+                                    color = ErrorRedSoft,
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = recoveryErrorMessage,
+                                        color = ErrorRed,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        modifier = Modifier.padding(12.dp)
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(16.dp))
+                            OutlinedTextField(
+                                value = emailInput,
+                                onValueChange = { emailInput = it },
+                                label = { Text("Seller email") },
+                                placeholder = { Text("seller@store.pk") },
+                                leadingIcon = { Icon(Icons.Default.Email, contentDescription = null) },
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Email,
+                                    imeAction = ImeAction.Done
+                                ),
+                                singleLine = true,
+                                isError = emailInput.isNotBlank() && !emailValid,
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("recovery_email_input")
+                            )
+                            Spacer(modifier = Modifier.height(18.dp))
+                            Button(
+                                onClick = { onSendPasswordReset(emailInput.trim()) },
+                                enabled = emailValid && !isBusy,
+                                shape = RoundedCornerShape(16.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .defaultMinSize(minHeight = 52.dp)
+                                    .testTag("recovery_send_code_button")
+                            ) {
+                                if (isBusy) {
+                                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = Color.White)
+                                } else {
+                                    Text("Send reset code", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            TextButton(
+                                onClick = onCancelRecovery,
+                                modifier = Modifier.align(Alignment.CenterHorizontally)
+                            ) {
+                                Text("Back to Sign In")
+                            }
+                        }
+                    }
+                }
+
+                // Step 2: Auto-verify 6-digit email OTP
+                recoveryStep == RecoveryStep.OTP -> {
                     Surface(
                         shape = RoundedCornerShape(24.dp),
                         color = MaterialTheme.colorScheme.surface,
@@ -512,97 +634,104 @@ fun LoginScreen(
                             Surface(
                                 shape = CircleShape,
                                 color = ZulvazaOrange.copy(alpha = 0.14f),
-                                modifier = Modifier.size(60.dp)
+                                modifier = Modifier.size(64.dp)
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
-                                    Icon(Icons.Default.LockReset, contentDescription = null, tint = ZulvazaOrange, modifier = Modifier.size(30.dp))
+                                    Icon(
+                                        imageVector = Icons.Default.MarkEmailRead,
+                                        contentDescription = null,
+                                        tint = ZulvazaOrange,
+                                        modifier = Modifier.size(32.dp)
+                                    )
                                 }
                             }
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Text("Reset Password", style = MaterialTheme.typography.headlineSmall)
-                            Spacer(modifier = Modifier.height(6.dp))
+                            Spacer(modifier = Modifier.height(14.dp))
+                            Text("Verify Reset Code", style = MaterialTheme.typography.headlineSmall)
+                            Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                "Enter the 6-digit recovery code sent to $recoveryPendingEmail and choose your new password.",
-                                style = MaterialTheme.typography.bodySmall,
+                                text = "Password reset code sent to $recoveryEmail",
+                                style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            Spacer(modifier = Modifier.height(16.dp))
+                            if (recoveryErrorMessage != null) {
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Surface(
+                                    color = ErrorRedSoft,
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = recoveryErrorMessage,
+                                        color = ErrorRed,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        modifier = Modifier.padding(12.dp)
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(20.dp))
                             OtpCodeBoxes(
-                                code = recoveryCode,
-                                onCodeChange = { recoveryCode = it },
-                                onComplete = {},
-                                enabled = !isBusy
-                            )
-                            Spacer(modifier = Modifier.height(16.dp))
-                            val recStrength = remember(recoveryNewPassword) {
-                                Formatters.evaluatePasswordStrength(recoveryNewPassword)
-                            }
-                            OutlinedTextField(
-                                value = recoveryNewPassword,
-                                onValueChange = { recoveryNewPassword = it },
-                                label = { Text("New Password (min 8 chars)") },
-                                leadingIcon = { Icon(Icons.Default.Key, contentDescription = null) },
-                                trailingIcon = {
-                                    IconButton(onClick = { showRecoveryPassword = !showRecoveryPassword }) {
-                                        Icon(
-                                            imageVector = if (showRecoveryPassword) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                            contentDescription = "Toggle password"
-                                        )
-                                    }
+                                code = recoveryOtp,
+                                onCodeChange = { recoveryOtp = it },
+                                onComplete = { entered ->
+                                    if (!isBusy) onVerifyRecoveryOtp(entered)
                                 },
-                                visualTransformation = if (showRecoveryPassword) VisualTransformation.None else PasswordVisualTransformation(),
-                                singleLine = true,
-                                shape = RoundedCornerShape(14.dp),
-                                modifier = Modifier.fillMaxWidth()
+                                enabled = !isBusy,
+                                isError = recoveryErrorMessage != null
                             )
-                            if (recoveryNewPassword.isNotEmpty()) {
-                                Spacer(modifier = Modifier.height(10.dp))
-                                PasswordStrengthMeter(
-                                    strength = recStrength,
-                                    lengthOk = recoveryNewPassword.length >= 8
-                                )
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Column(modifier = Modifier.fillMaxWidth()) {
-                                    PasswordChecklistRow(
-                                        label = "Minimum 8 characters",
-                                        met = recoveryNewPassword.length >= 8
-                                    )
-                                    PasswordChecklistRow(
-                                        label = "Letters & numbers recommended",
-                                        met = recoveryNewPassword.any { it.isDigit() } && recoveryNewPassword.any { it.isLetter() }
-                                    )
-                                    PasswordChecklistRow(
-                                        label = "Special symbol (!@#$%^&*)",
-                                        met = recoveryNewPassword.any { !it.isLetterOrDigit() }
-                                    )
-                                }
-                            }
                             Spacer(modifier = Modifier.height(18.dp))
-                            Button(
-                                onClick = {
-                                    onVerifyRecoveryReset(recoveryPendingEmail, recoveryCode, recoveryNewPassword)
-                                },
-                                enabled = recoveryCode.length == 6 && recoveryNewPassword.length >= 8 && !isBusy,
-                                shape = RoundedCornerShape(16.dp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .defaultMinSize(minHeight = 52.dp)
-                            ) {
-                                if (isBusy) {
-                                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = Color.White)
-                                } else {
-                                    Text("Reset Password & Sign In", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (isBusy) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        "Verifying reset code...",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = ZulvazaOrange,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
                                 }
+                            } else {
+                                Text(
+                                    text = "Verifies automatically when all 6 digits are entered",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
-                            Spacer(modifier = Modifier.height(6.dp))
-                            TextButton(onClick = onCancelRecovery) {
-                                Text("Back to Sign In")
+                            Spacer(modifier = Modifier.height(14.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                TextButton(
+                                    onClick = onChangeRecoveryEmail,
+                                    enabled = !isBusy
+                                ) {
+                                    Text("Change email address")
+                                }
+                                TextButton(
+                                    onClick = {
+                                        onResendRecoveryOtp()
+                                        recoveryResendSeconds = 60
+                                    },
+                                    enabled = recoveryResendSeconds == 0 && !isBusy
+                                ) {
+                                    Text(
+                                        if (recoveryResendSeconds > 0) "Resend (${recoveryResendSeconds}s)"
+                                        else "Resend code"
+                                    )
+                                }
                             }
                         }
                     }
                 }
 
-                showForgotPasswordForm -> {
+                // Step 3: Set New Password + Confirm Password
+                recoveryStep == RecoveryStep.NEW_PASSWORD -> {
+                    val recStrength = remember(newPassword) { Formatters.evaluatePasswordStrength(newPassword) }
+                    val lengthOk = newPassword.length >= 8
+                    val matchOk = confirmNewPassword.isNotEmpty() && newPassword == confirmNewPassword
                     Surface(
                         shape = RoundedCornerShape(24.dp),
                         color = MaterialTheme.colorScheme.surface,
@@ -611,44 +740,172 @@ fun LoginScreen(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Column(modifier = Modifier.padding(22.dp)) {
-                            Text("Forgot Password?", style = MaterialTheme.typography.headlineSmall)
-                            Spacer(modifier = Modifier.height(6.dp))
+                            Text("Create New Password", style = MaterialTheme.typography.headlineSmall)
+                            Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                "Enter your registered seller email. We'll send a 6-digit recovery code to reset your password.",
-                                style = MaterialTheme.typography.bodyMedium,
+                                "Step 3 of 3 • Set a strong new password for $recoveryEmail",
+                                style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                            if (recoveryErrorMessage != null) {
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Surface(
+                                    color = ErrorRedSoft,
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = recoveryErrorMessage,
+                                        color = ErrorRed,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        modifier = Modifier.padding(12.dp)
+                                    )
+                                }
+                            }
                             Spacer(modifier = Modifier.height(16.dp))
                             OutlinedTextField(
-                                value = recoveryEmail,
-                                onValueChange = { recoveryEmail = it },
-                                label = { Text("Seller email") },
-                                leadingIcon = { Icon(Icons.Default.Email, contentDescription = null) },
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                                value = newPassword,
+                                onValueChange = { newPassword = it },
+                                label = { Text("New Password") },
+                                leadingIcon = { Icon(Icons.Default.Key, contentDescription = null) },
+                                trailingIcon = {
+                                    IconButton(onClick = { showNewPassword = !showNewPassword }) {
+                                        Icon(
+                                            imageVector = if (showNewPassword) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                            contentDescription = "Toggle password"
+                                        )
+                                    }
+                                },
+                                visualTransformation = if (showNewPassword) VisualTransformation.None else PasswordVisualTransformation(),
                                 singleLine = true,
                                 shape = RoundedCornerShape(14.dp),
-                                modifier = Modifier.fillMaxWidth()
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("recovery_new_password_input")
                             )
+                            if (newPassword.isNotEmpty()) {
+                                Spacer(modifier = Modifier.height(10.dp))
+                                PasswordStrengthMeter(strength = recStrength, lengthOk = lengthOk)
+                                Spacer(modifier = Modifier.height(6.dp))
+                                PasswordChecklistRow(label = "Minimum 8 characters", met = lengthOk)
+                                PasswordChecklistRow(
+                                    label = "Letters & numbers recommended",
+                                    met = newPassword.any { it.isDigit() } && newPassword.any { it.isLetter() }
+                                )
+                                PasswordChecklistRow(
+                                    label = "Special symbol (!@#$%^&*)",
+                                    met = newPassword.any { !it.isLetterOrDigit() }
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(12.dp))
+                            OutlinedTextField(
+                                value = confirmNewPassword,
+                                onValueChange = { confirmNewPassword = it },
+                                label = { Text("Confirm New Password") },
+                                leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
+                                trailingIcon = {
+                                    IconButton(onClick = { showConfirmNewPassword = !showConfirmNewPassword }) {
+                                        Icon(
+                                            imageVector = if (showConfirmNewPassword) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                            contentDescription = "Toggle confirm password"
+                                        )
+                                    }
+                                },
+                                visualTransformation = if (showConfirmNewPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                                isError = confirmNewPassword.isNotEmpty() && !matchOk,
+                                singleLine = true,
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("recovery_confirm_password_input")
+                            )
+                            if (confirmNewPassword.isNotEmpty()) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = if (matchOk) Icons.Default.CheckCircle else Icons.Default.Close,
+                                        contentDescription = null,
+                                        tint = if (matchOk) SuccessGreen else ErrorRed,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = if (matchOk) "Passwords match" else "Passwords do not match",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = if (matchOk) SuccessGreen else ErrorRed
+                                    )
+                                }
+                            }
                             Spacer(modifier = Modifier.height(18.dp))
                             Button(
-                                onClick = {
-                                    onSendPasswordReset(recoveryEmail.trim())
-                                    showForgotPasswordForm = false
-                                },
-                                enabled = Patterns.EMAIL_ADDRESS.matcher(recoveryEmail.trim()).matches() && !isBusy,
+                                onClick = { onSaveRecoveredPassword(newPassword) },
+                                enabled = lengthOk && matchOk && !isBusy,
                                 shape = RoundedCornerShape(16.dp),
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .defaultMinSize(minHeight = 52.dp)
+                                    .testTag("recovery_save_password_button")
                             ) {
-                                Text("Send Recovery Code", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                if (isBusy) {
+                                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = Color.White)
+                                } else {
+                                    Text("Save New Password", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
                             }
-                            Spacer(modifier = Modifier.height(8.dp))
-                            TextButton(
-                                onClick = { showForgotPasswordForm = false },
-                                modifier = Modifier.align(Alignment.CenterHorizontally)
+                        }
+                    }
+                }
+
+                // Success Confirmation -> Log in
+                recoveryStep == RecoveryStep.SUCCESS -> {
+                    Surface(
+                        shape = RoundedCornerShape(24.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(1.dp, SuccessGreen.copy(alpha = 0.4f)),
+                        shadowElevation = 2.dp,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Surface(
+                                shape = CircleShape,
+                                color = SuccessGreen.copy(alpha = 0.14f),
+                                modifier = Modifier.size(72.dp)
                             ) {
-                                Text("Cancel")
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Default.CheckCircle,
+                                        contentDescription = null,
+                                        tint = SuccessGreen,
+                                        modifier = Modifier.size(40.dp)
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                text = "Your password has been changed.",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "You can now sign in with your new password.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(20.dp))
+                            Button(
+                                onClick = onCancelRecovery,
+                                shape = RoundedCornerShape(16.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .defaultMinSize(minHeight = 52.dp)
+                                    .testTag("recovery_login_button")
+                            ) {
+                                Text("Log in", style = MaterialTheme.typography.titleMedium)
                             }
                         }
                     }
@@ -731,10 +988,7 @@ fun LoginScreen(
                                 horizontalArrangement = Arrangement.End
                             ) {
                                 TextButton(
-                                    onClick = {
-                                        recoveryEmail = email
-                                        showForgotPasswordForm = true
-                                    },
+                                    onClick = { onOpenForgotPassword(email) },
                                     modifier = Modifier.testTag("forgot_password_button")
                                 ) {
                                     Text("Forgot password?", style = MaterialTheme.typography.labelMedium)

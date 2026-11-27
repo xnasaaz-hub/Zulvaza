@@ -40,9 +40,13 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.InstallMobile
 import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.LaptopMac
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockReset
 import androidx.compose.material.icons.filled.MarkEmailRead
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PhonelinkLock
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
@@ -109,9 +113,11 @@ import com.example.data.remote.AppUpdateStatus
 import com.example.data.remote.PasswordChangeOtpMode
 import com.example.data.remote.SupabaseConfig
 import com.example.ui.components.OtpCodeBoxes
+import com.example.ui.components.PinSetupModal
 import com.example.ui.components.QrCodeImage
 import com.example.ui.components.SignedRemoteImage
 import com.example.ui.components.StatusPill
+import com.example.ui.components.VerifyCurrentPinModal
 import com.example.ui.components.copyToClipboard
 import com.example.ui.theme.ErrorRed
 import com.example.ui.theme.ErrorRedSoft
@@ -130,6 +136,7 @@ enum class AccountSubScreen {
     MENU,
     VERIFICATION,
     SECURITY_HUB,
+    SECURITY_PIN,
     SECURITY_TWO_FACTOR,
     SECURITY_PASSWORD,
     SECURITY_DEVICES,
@@ -145,12 +152,17 @@ fun AccountScreen(
     mfaEnrollment: MfaTotpEnrollment?,
     activeDevices: List<ActiveDeviceSession>,
     appUpdateStatus: AppUpdateStatus,
+    hasAppPin: Boolean,
+    isAppPinEnabled: Boolean,
     isBusy: Boolean,
     initialSubScreen: AccountSubScreen = AccountSubScreen.MENU,
     resolveStoreMedia: (String?) -> String?,
     resolveDocUrl: (String) -> String?,
     resolveFaceUrl: (String) -> String?,
     onOpenVerificationEditor: () -> Unit,
+    onSetupAppPin: (String, () -> Unit) -> Unit,
+    onToggleAppPinWithCurrentPin: (String, Boolean, (Boolean) -> Unit) -> Unit,
+    onDeleteAppPinWithCurrentPin: (String, (Boolean) -> Unit) -> Unit,
     onRequestPasswordOtp: (String, (PasswordChangeOtpMode, String) -> Unit) -> Unit,
     onConfirmPasswordChange: (String, String, PasswordChangeOtpMode, String, () -> Unit) -> Unit,
     onStartTotpEnroll: () -> Unit,
@@ -222,12 +234,24 @@ fun AccountScreen(
         )
 
         AccountSubScreen.SECURITY_HUB -> SecurityHubSubScreen(
+            hasAppPin = hasAppPin,
+            isAppPinEnabled = isAppPinEnabled,
             is2faActive = verifiedFactor != null,
             deviceCount = displayDevices.size,
+            onOpenAppPin = { subScreen = AccountSubScreen.SECURITY_PIN },
             onOpenTwoFactor = { subScreen = AccountSubScreen.SECURITY_TWO_FACTOR },
             onOpenPassword = { subScreen = AccountSubScreen.SECURITY_PASSWORD },
             onOpenDevices = { subScreen = AccountSubScreen.SECURITY_DEVICES },
             onBack = { subScreen = AccountSubScreen.MENU }
+        )
+
+        AccountSubScreen.SECURITY_PIN -> AppLockPinPage(
+            hasAppPin = hasAppPin,
+            isAppPinEnabled = isAppPinEnabled,
+            onSetupAppPin = onSetupAppPin,
+            onToggleAppPinWithCurrentPin = onToggleAppPinWithCurrentPin,
+            onDeleteAppPinWithCurrentPin = onDeleteAppPinWithCurrentPin,
+            onBack = { subScreen = AccountSubScreen.SECURITY_HUB }
         )
 
         AccountSubScreen.SECURITY_TWO_FACTOR -> TwoFactorSecurityPage(
@@ -373,7 +397,7 @@ fun AccountScreen(
                         icon = Icons.Default.Security,
                         iconTint = ZulvazaOrange,
                         title = "Security",
-                        subtitle = "Two-Factor Authenticator, Password & Device logins",
+                        subtitle = "App Lock PIN, Two-Factor, Password & Device logins",
                         onClick = { subScreen = AccountSubScreen.SECURITY_HUB },
                         testTag = "account_security"
                     )
@@ -496,8 +520,11 @@ private fun SettingsMenuNavigationCard(
 
 @Composable
 private fun SecurityHubSubScreen(
+    hasAppPin: Boolean,
+    isAppPinEnabled: Boolean,
     is2faActive: Boolean,
     deviceCount: Int,
+    onOpenAppPin: () -> Unit,
     onOpenTwoFactor: () -> Unit,
     onOpenPassword: () -> Unit,
     onOpenDevices: () -> Unit,
@@ -529,11 +556,11 @@ private fun SecurityHubSubScreen(
 
         // Security overview banner
         Surface(
-            color = if (is2faActive) SuccessGreenSoft else ZulvazaOrange.copy(alpha = 0.08f),
+            color = if (is2faActive || isAppPinEnabled) SuccessGreenSoft else ZulvazaOrange.copy(alpha = 0.08f),
             shape = RoundedCornerShape(20.dp),
             border = BorderStroke(
                 1.dp,
-                if (is2faActive) SuccessGreen.copy(alpha = 0.35f) else ZulvazaOrange.copy(alpha = 0.3f)
+                if (is2faActive || isAppPinEnabled) SuccessGreen.copy(alpha = 0.35f) else ZulvazaOrange.copy(alpha = 0.3f)
             ),
             modifier = Modifier.fillMaxWidth()
         ) {
@@ -543,30 +570,35 @@ private fun SecurityHubSubScreen(
             ) {
                 Surface(
                     shape = CircleShape,
-                    color = if (is2faActive) SuccessGreen.copy(alpha = 0.16f) else ZulvazaOrange.copy(alpha = 0.16f),
+                    color = if (is2faActive || isAppPinEnabled) SuccessGreen.copy(alpha = 0.16f) else ZulvazaOrange.copy(alpha = 0.16f),
                     modifier = Modifier.size(44.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
                             imageVector = Icons.Default.VerifiedUser,
                             contentDescription = null,
-                            tint = if (is2faActive) SuccessGreen else ZulvazaOrange
+                            tint = if (is2faActive || isAppPinEnabled) SuccessGreen else ZulvazaOrange
                         )
                     }
                 }
                 Spacer(modifier = Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = if (is2faActive) "2FA Protection Active" else "Enhance Account Protection",
+                        text = when {
+                            is2faActive && isAppPinEnabled -> "PIN & 2FA Protection Active"
+                            is2faActive -> "2FA Protection Active"
+                            isAppPinEnabled -> "App Lock PIN Active"
+                            else -> "Enhance Account Protection"
+                        },
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
-                        color = if (is2faActive) SuccessGreen else ZulvazaNavy
+                        color = if (is2faActive || isAppPinEnabled) SuccessGreen else ZulvazaNavy
                     )
                     Text(
-                        text = if (is2faActive) {
-                            "Your seller account requires authenticator verification."
+                        text = if (is2faActive || isAppPinEnabled) {
+                            "Your seller center is safeguarded with local & cloud security."
                         } else {
-                            "Enable Two-Factor Authenticator for stronger seller security."
+                            "Set a 5-digit App PIN or Two-Factor Authenticator for stronger security."
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -575,7 +607,22 @@ private fun SecurityHubSubScreen(
             }
         }
 
-        // 3 Separate Dedicated Security Pages
+        // 4 Dedicated Security Pages
+        SettingsMenuNavigationCard(
+            icon = Icons.Default.Lock,
+            iconTint = ZulvazaNavy,
+            title = "App Lock PIN",
+            subtitle = "Require a 5-digit PIN when opening Seller Center",
+            badgeText = when {
+                isAppPinEnabled -> "On"
+                hasAppPin -> "Off"
+                else -> "Not Set"
+            },
+            badgePositive = isAppPinEnabled,
+            onClick = onOpenAppPin,
+            testTag = "security_open_app_pin"
+        )
+
         SettingsMenuNavigationCard(
             icon = Icons.Default.PhonelinkLock,
             iconTint = ZulvazaOrange,
@@ -591,7 +638,7 @@ private fun SecurityHubSubScreen(
             icon = Icons.Default.LockReset,
             iconTint = ZulvazaNavy,
             title = "Change Password",
-            subtitle = "Update your login password securely",
+            subtitle = "Update your login password securely with email OTP",
             onClick = onOpenPassword,
             testTag = "security_open_password"
         )
@@ -606,6 +653,217 @@ private fun SecurityHubSubScreen(
             onClick = onOpenDevices,
             testTag = "security_open_devices"
         )
+    }
+}
+
+@Composable
+private fun AppLockPinPage(
+    hasAppPin: Boolean,
+    isAppPinEnabled: Boolean,
+    onSetupAppPin: (String, () -> Unit) -> Unit,
+    onToggleAppPinWithCurrentPin: (String, Boolean, (Boolean) -> Unit) -> Unit,
+    onDeleteAppPinWithCurrentPin: (String, (Boolean) -> Unit) -> Unit,
+    onBack: () -> Unit
+) {
+    BackHandler { onBack() }
+
+    var showSetupPinModal by remember { mutableStateOf(false) }
+    var pendingToggleTarget by remember { mutableStateOf<Boolean?>(null) }
+    var showVerifyForChangePin by remember { mutableStateOf(false) }
+    var showVerifyForDeletePin by remember { mutableStateOf(false) }
+
+    if (showSetupPinModal) {
+        PinSetupModal(
+            title = if (hasAppPin) "Set New 5-Digit PIN" else "Set 5-Digit Security PIN",
+            subtitle = "Enter a 5-digit PIN to lock ZULVAZA Seller Center on launch.",
+            allowSkip = false,
+            onCompleted = { newPin ->
+                onSetupAppPin(newPin) {
+                    showSetupPinModal = false
+                }
+            },
+            onDismiss = { showSetupPinModal = false }
+        )
+    }
+
+    if (pendingToggleTarget != null) {
+        val turnOn = pendingToggleTarget!!
+        VerifyCurrentPinModal(
+            title = if (turnOn) "Verify PIN to Enable Lock" else "Verify PIN to Disable Lock",
+            subtitle = "Enter your current 5-digit security PIN to confirm.",
+            onVerifyPin = { entered, onResult ->
+                onToggleAppPinWithCurrentPin(entered, turnOn) { ok ->
+                    onResult(ok)
+                    if (ok) {
+                        pendingToggleTarget = null
+                    }
+                }
+            },
+            onDismiss = { pendingToggleTarget = null }
+        )
+    }
+
+    if (showVerifyForChangePin) {
+        VerifyCurrentPinModal(
+            title = "Verify Current PIN",
+            subtitle = "Enter your existing 5-digit PIN before setting a new one.",
+            onVerifyPin = { entered, onResult ->
+                // Verify without altering enabled state (pass current state)
+                onToggleAppPinWithCurrentPin(entered, isAppPinEnabled) { ok ->
+                    onResult(ok)
+                    if (ok) {
+                        showVerifyForChangePin = false
+                        showSetupPinModal = true
+                    }
+                }
+            },
+            onDismiss = { showVerifyForChangePin = false }
+        )
+    }
+
+    if (showVerifyForDeletePin) {
+        VerifyCurrentPinModal(
+            title = "Verify PIN to Remove Lock",
+            subtitle = "Enter your 5-digit security PIN to delete App Lock.",
+            onVerifyPin = { entered, onResult ->
+                onDeleteAppPinWithCurrentPin(entered) { ok ->
+                    onResult(ok)
+                    if (ok) {
+                        showVerifyForDeletePin = false
+                    }
+                }
+            },
+            onDismiss = { showVerifyForDeletePin = false }
+        )
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack, modifier = Modifier.testTag("pin_back_button")) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+            }
+            Spacer(modifier = Modifier.width(4.dp))
+            Text("App Lock PIN", style = MaterialTheme.typography.headlineSmall)
+        }
+
+        Card(
+            shape = RoundedCornerShape(22.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(18.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                        Surface(
+                            shape = CircleShape,
+                            color = (if (isAppPinEnabled) SuccessGreen else ZulvazaNavy).copy(alpha = 0.12f),
+                            modifier = Modifier.size(44.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.Lock,
+                                    contentDescription = null,
+                                    tint = if (isAppPinEnabled) SuccessGreen else ZulvazaNavy
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text("5-Digit Security PIN", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                text = when {
+                                    isAppPinEnabled -> "Enabled on app launch"
+                                    hasAppPin -> "PIN saved (Currently Off)"
+                                    else -> "Not configured"
+                                },
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (isAppPinEnabled) SuccessGreen else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    if (hasAppPin) {
+                        Switch(
+                            checked = isAppPinEnabled,
+                            onCheckedChange = { turnOn ->
+                                pendingToggleTarget = turnOn
+                            },
+                            modifier = Modifier.testTag("app_pin_toggle_switch")
+                        )
+                    }
+                }
+
+                HorizontalDivider(
+                    modifier = Modifier.padding(vertical = 14.dp),
+                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)
+                )
+
+                Text(
+                    text = "Lock ZULVAZA Seller Center with a salted 5-digit PIN so nobody else using your phone can access orders or store settings.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                if (!hasAppPin) {
+                    Button(
+                        onClick = { showSetupPinModal = true },
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 50.dp)
+                            .testTag("setup_app_pin_button")
+                    ) {
+                        Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Set 5-Digit Security PIN", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { showVerifyForChangePin = true },
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .defaultMinSize(minHeight = 48.dp)
+                                .testTag("change_app_pin_button")
+                        ) {
+                            Text("Change PIN", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+
+                        OutlinedButton(
+                            onClick = { showVerifyForDeletePin = true },
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = ErrorRed),
+                            border = BorderStroke(1.dp, ErrorRed.copy(alpha = 0.45f)),
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .defaultMinSize(minHeight = 48.dp)
+                                .testTag("delete_app_pin_button")
+                        ) {
+                            Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Delete PIN", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -927,12 +1185,33 @@ private fun TwoFactorSecurityPage(
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(
-                            text = "Secret: ${mfaEnrollment.secret}",
-                            fontFamily = JetBrainsMonoFontFamily,
-                            style = MaterialTheme.typography.labelSmall,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Secret: ${mfaEnrollment.secret}",
+                                fontFamily = JetBrainsMonoFontFamily,
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(
+                                onClick = {
+                                    copyToClipboard(context, "TOTP Secret", mfaEnrollment.secret)
+                                    onToast("Secret key copied", false)
+                                },
+                                modifier = Modifier.testTag("totp_inline_copy_secret_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.ContentCopy,
+                                    contentDescription = "Copy TOTP secret",
+                                    tint = ZulvazaOrange,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(16.dp))
@@ -1416,6 +1695,12 @@ private fun DeviceLoginsPage(
                         .padding(16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    val deviceDescriptor = "${device.deviceName} ${device.osVersion}".lowercase()
+                    val deviceIcon = when {
+                        listOf("windows", "mac", "linux", "desktop", "laptop", "pc").any { it in deviceDescriptor } -> Icons.Default.LaptopMac
+                        listOf("web", "browser", "chrome", "safari", "firefox", "edge").any { it in deviceDescriptor } -> Icons.Default.Language
+                        else -> Icons.Default.PhoneAndroid
+                    }
                     Surface(
                         shape = CircleShape,
                         color = (if (device.isOnline) SuccessGreen else MaterialTheme.colorScheme.outline).copy(alpha = 0.14f),
@@ -1423,7 +1708,7 @@ private fun DeviceLoginsPage(
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
-                                Icons.Default.Devices,
+                                imageVector = deviceIcon,
                                 contentDescription = null,
                                 tint = if (device.isOnline) SuccessGreen else MaterialTheme.colorScheme.onSurfaceVariant
                             )

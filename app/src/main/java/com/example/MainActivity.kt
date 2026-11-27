@@ -45,6 +45,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.Storefront
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.runtime.mutableIntStateOf
@@ -89,8 +90,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.model.ProductDraft
 import com.example.data.model.ProductItem
 import com.example.data.model.VerificationStatus
+import com.example.ui.components.AppLockPinOverlay
 import com.example.ui.components.OfflineBanner
+import com.example.ui.components.PinSetupModal
 import com.example.ui.components.ShareProductBottomSheet
+import com.example.ui.components.ShareStoreBottomSheet
 import com.example.ui.components.SignedRemoteImage
 import com.example.ui.components.copyToClipboard
 import com.example.ui.screens.AccountScreen
@@ -257,15 +261,17 @@ private fun ZulvazaRootContent(
         RootDestination.WELCOME, RootDestination.LOGIN -> {
             LoginScreen(
                 requiresMfa = state.pendingMfaSession != null,
-                loginOtpPendingEmail = state.loginOtpPendingEmail,
-                recoveryPendingEmail = state.recoveryPendingEmail,
+                recoveryStep = state.recoveryStep,
+                recoveryEmail = state.recoveryEmail,
+                recoveryErrorMessage = state.recoveryErrorMessage,
                 isBusy = state.isBusy,
                 onLogin = viewModel::signIn,
-                onSendEmailOtp = viewModel::sendEmailLoginOtp,
-                onVerifyEmailOtp = viewModel::verifyEmailLoginOtp,
-                onCancelEmailOtp = viewModel::clearLoginOtpPending,
+                onOpenForgotPassword = viewModel::openForgotPassword,
                 onSendPasswordReset = viewModel::sendPasswordResetOtp,
-                onVerifyRecoveryReset = viewModel::verifyRecoveryAndSetPassword,
+                onVerifyRecoveryOtp = viewModel::verifyRecoveryOtpCode,
+                onResendRecoveryOtp = viewModel::resendPasswordResetOtp,
+                onSaveRecoveredPassword = viewModel::saveRecoveredPassword,
+                onChangeRecoveryEmail = viewModel::changeRecoveryEmail,
                 onCancelRecovery = viewModel::clearRecoveryPending,
                 onVerifyMfa = viewModel::verifyLoginMfa,
                 onCancelMfa = viewModel::cancelLoginMfa,
@@ -316,6 +322,7 @@ private fun MainSellerShell(
     var productFormResetKey by remember { mutableIntStateOf(0) }
     var dashboardDetailProduct by remember { mutableStateOf<ProductItem?>(null) }
     var sharingProduct by remember { mutableStateOf<ProductItem?>(null) }
+    var showShareStoreSheet by remember { mutableStateOf(false) }
     var showEditStoreSheet by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var showNotifications by remember { mutableStateOf(false) }
@@ -328,10 +335,36 @@ private fun MainSellerShell(
         }
     }
 
+    if (state.isAppLocked) {
+        AppLockPinOverlay(
+            onVerifyPin = { entered, onResult ->
+                viewModel.unlockAppWithPin(entered) { onResult(false) }
+            },
+            onSignOutFallback = viewModel::signOut
+        )
+        return
+    }
+
+    if (state.showPinSetupPrompt) {
+        PinSetupModal(
+            allowSkip = true,
+            onCompleted = { pin -> viewModel.setupAppPin(pin) },
+            onDismiss = viewModel::dismissPinSetupPrompt
+        )
+    }
+
     if (sharingProduct != null) {
         ShareProductBottomSheet(
             product = sharingProduct!!,
             onDismiss = { sharingProduct = null },
+            onCopied = { msg -> viewModel.showToast(msg) }
+        )
+    }
+
+    if (showShareStoreSheet) {
+        ShareStoreBottomSheet(
+            store = state.store,
+            onDismiss = { showShareStoreSheet = false },
             onCopied = { msg -> viewModel.showToast(msg) }
         )
     }
@@ -417,6 +450,8 @@ private fun MainSellerShell(
                 mfaEnrollment = state.mfaEnrollment,
                 activeDevices = state.activeDevices,
                 appUpdateStatus = state.appUpdateStatus,
+                hasAppPin = state.hasAppPin,
+                isAppPinEnabled = state.isAppPinEnabled,
                 isBusy = state.isBusy,
                 initialSubScreen = settingsInitialSubScreen,
                 resolveStoreMedia = viewModel::resolveStoreMediaUrl,
@@ -426,6 +461,9 @@ private fun MainSellerShell(
                     showSettings = false
                     viewModel.openVerificationEditor()
                 },
+                onSetupAppPin = { pin, onDone -> viewModel.setupAppPin(pin, onDone) },
+                onToggleAppPinWithCurrentPin = viewModel::toggleAppPinWithCurrentPin,
+                onDeleteAppPinWithCurrentPin = viewModel::deleteAppPinWithCurrentPin,
                 onRequestPasswordOtp = viewModel::requestPasswordChangeOtp,
                 onConfirmPasswordChange = viewModel::confirmPasswordChangeWithOtp,
                 onStartTotpEnroll = viewModel::startTotpEnrollment,
@@ -544,8 +582,9 @@ private fun MainSellerShell(
             if (state.activeTab == MainTab.HOME) {
                 SellerTopAppBar(
                     storeName = storeDisplayName,
+                    storeLogoUrl = storeLogoUrl,
                     unreadNotificationCount = state.unreadNotificationCount,
-                    onLogoClick = { viewModel.selectTab(MainTab.HOME) },
+                    onMyStoreClick = { viewModel.selectTab(MainTab.MY_STORE) },
                     onNotificationsClick = { showNotifications = true },
                     onSettingsClick = {
                         settingsInitialSubScreen = AccountSubScreen.MENU
@@ -663,6 +702,7 @@ private fun MainSellerShell(
                             onSaveStoreMedia = viewModel::saveStoreMediaOnly,
                             onDeleteStoreMedia = viewModel::removeStoreMedia,
                             onEditStore = { showEditStoreSheet = true },
+                            onShareStore = { showShareStoreSheet = true },
                             onOpenProductDetail = { p -> dashboardDetailProduct = p },
                             onToast = viewModel::showToast
                         )
@@ -716,8 +756,9 @@ private fun StoreTabNavIcon(
 @Composable
 private fun SellerTopAppBar(
     storeName: String,
+    storeLogoUrl: String?,
     unreadNotificationCount: Int,
-    onLogoClick: () -> Unit,
+    onMyStoreClick: () -> Unit,
     onNotificationsClick: () -> Unit,
     onSettingsClick: () -> Unit
 ) {
@@ -735,38 +776,51 @@ private fun SellerTopAppBar(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                // Left: Brand Icon + Constant Greeting + Store Name
+                // Left: Clickable My Store avatar & title opening MainTab.MY_STORE
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(14.dp))
+                        .clickable(onClick = onMyStoreClick)
+                        .padding(vertical = 4.dp, horizontal = 2.dp)
+                        .testTag("topbar_logo")
                 ) {
                     Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = Color.White,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                        shape = CircleShape,
+                        color = ZulvazaOrange.copy(alpha = 0.12f),
+                        border = BorderStroke(1.5.dp, ZulvazaOrange.copy(alpha = 0.7f)),
                         modifier = Modifier
-                            .size(44.dp)
-                            .clip(RoundedCornerShape(14.dp))
-                            .clickable(onClick = onLogoClick)
-                            .testTag("topbar_logo")
+                            .size(42.dp)
+                            .clip(CircleShape)
                     ) {
-                        Image(
-                            painter = painterResource(id = R.drawable.ic_zulvaza_app_icon),
-                            contentDescription = "ZULVAZA Seller Center",
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(3.dp)
-                        )
+                        if (!storeLogoUrl.isNullOrBlank()) {
+                            SignedRemoteImage(
+                                url = storeLogoUrl,
+                                contentDescription = "My Store",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.Storefront,
+                                    contentDescription = "My Store",
+                                    tint = ZulvazaOrange,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                        }
                     }
 
-                    Spacer(modifier = Modifier.width(12.dp))
+                    Spacer(modifier = Modifier.width(10.dp))
 
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Assalam-o-Alaikum,",
+                            text = "My Store",
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = ZulvazaOrange,
+                            fontWeight = FontWeight.Bold,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )

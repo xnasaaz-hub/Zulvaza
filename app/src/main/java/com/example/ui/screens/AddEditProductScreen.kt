@@ -37,13 +37,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Category
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudUpload
-import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Publish
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Tune
@@ -80,7 +77,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusEvent
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -100,19 +96,32 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private val SELLER_PRODUCT_CATEGORIES = listOf(
-    "Fashion & Apparel",
     "Electronics",
+    "Fashion",
     "Home & Living",
-    "Beauty & Personal Care",
-    "Sports & Outdoors",
-    "Kids & Toys",
-    "Accessories",
-    "Footwear",
+    "Beauty",
+    "Sports",
     "Groceries",
-    "Health & Wellness",
+    "Books",
+    "Toys",
     "Automotive",
-    "General"
+    "Health",
+    "Other"
 )
+
+private fun normalizeSellerCategory(raw: String?): String {
+    val trimmed = raw?.trim().orEmpty()
+    if (trimmed in SELLER_PRODUCT_CATEGORIES) return trimmed
+    return when (trimmed) {
+        "Fashion & Apparel", "Accessories", "Footwear" -> "Fashion"
+        "Beauty & Personal Care" -> "Beauty"
+        "Sports & Outdoors" -> "Sports"
+        "Kids & Toys" -> "Toys"
+        "Health & Wellness" -> "Health"
+        "General" -> "Other"
+        else -> SELLER_PRODUCT_CATEGORIES.first()
+    }
+}
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -157,9 +166,10 @@ fun AddEditProductScreen(
     }
     var category by remember(editingProduct, resumingDraft, formResetKey) {
         mutableStateOf(
-            editingProduct?.category?.takeIf { it.isNotBlank() }
-                ?: resumingDraft?.category?.takeIf { it.isNotBlank() }
-                ?: SELLER_PRODUCT_CATEGORIES.first()
+            normalizeSellerCategory(
+                editingProduct?.category?.takeIf { it.isNotBlank() }
+                    ?: resumingDraft?.category?.takeIf { it.isNotBlank() }
+            )
         )
     }
     var categoryExpanded by remember { mutableStateOf(false) }
@@ -551,7 +561,7 @@ fun AddEditProductScreen(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = if (isUploadingMedia) mediaUploadLabel.ifBlank { "Uploading media..." } else "Upload Photos & Video",
+                            text = if (isUploadingMedia) mediaUploadLabel.ifBlank { "Uploading media..." } else "Add Photos & Videos",
                             color = ZulvazaOrange,
                             fontWeight = FontWeight.SemiBold,
                             maxLines = 1,
@@ -571,8 +581,15 @@ fun AddEditProductScreen(
                         )
                     }
 
-                    // Uploaded & Uploading Photos Gallery
-                    if (imagePaths.isNotEmpty() || pendingPhotoUris.isNotEmpty()) {
+                    val activeVideoPlayUrl = selectedVideoUri?.toString()
+                        ?: videoPath?.let { resolveVideoUrl(it) }
+                    val hasAnyMedia = imagePaths.isNotEmpty() ||
+                        pendingPhotoUris.isNotEmpty() ||
+                        videoPath != null ||
+                        selectedVideoUri != null
+
+                    // Unified Horizontal Media Strip (Photos + Playable Video Tile)
+                    if (hasAnyMedia) {
                         Spacer(modifier = Modifier.height(14.dp))
                         Row(
                             modifier = Modifier
@@ -651,128 +668,100 @@ fun AddEditProductScreen(
                                     }
                                 }
                             }
-                        }
-                    }
-
-                    // Playable Video Showcase Card
-                    val activeVideoPlayUrl = selectedVideoUri?.toString()
-                        ?: videoPath?.let { resolveVideoUrl(it) }
-
-                    if (videoPath != null || selectedVideoUri != null) {
-                        Spacer(modifier = Modifier.height(14.dp))
-                        Surface(
-                            shape = RoundedCornerShape(16.dp),
-                            color = ZulvazaNavy.copy(alpha = 0.05f),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.padding(12.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Icon(
-                                            imageVector = if (videoPath != null) Icons.Default.CheckCircle else Icons.Default.PlayCircle,
-                                            contentDescription = null,
-                                            tint = if (videoPath != null) SuccessGreen else ZulvazaOrange,
-                                            modifier = Modifier.size(20.dp)
+                            if (videoPath != null || selectedVideoUri != null) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(96.dp)
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(ZulvazaNavy)
+                                        .border(
+                                            width = if (showInlineVideoPlayer) 2.dp else 1.dp,
+                                            color = if (showInlineVideoPlayer) ZulvazaOrange else MaterialTheme.colorScheme.outline,
+                                            shape = RoundedCornerShape(14.dp)
                                         )
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Column {
-                                            Text(
-                                                text = if (videoPath != null) "Product Video Ready" else "Uploading Video...",
-                                                style = MaterialTheme.typography.labelLarge,
-                                                fontWeight = FontWeight.Bold
-                                            )
-                                            Text(
-                                                text = videoPath?.substringAfterLast('/') ?: "Selected showcase video",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
+                                        .clickable(enabled = !activeVideoPlayUrl.isNullOrBlank()) {
+                                            showInlineVideoPlayer = !showInlineVideoPlayer
                                         }
-                                    }
-
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        if (!activeVideoPlayUrl.isNullOrBlank()) {
-                                            TextButton(
-                                                onClick = { showInlineVideoPlayer = !showInlineVideoPlayer },
-                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                                        .testTag("add_product_video_tile")
+                                ) {
+                                    Box(
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        if (videoPath == null && isUploadingMedia) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(26.dp),
+                                                strokeWidth = 2.5.dp,
+                                                color = Color.White
+                                            )
+                                        } else {
+                                            Surface(
+                                                shape = CircleShape,
+                                                color = ZulvazaOrange,
+                                                modifier = Modifier.size(38.dp)
                                             ) {
-                                                Icon(
-                                                    Icons.Default.PlayArrow,
-                                                    contentDescription = null,
-                                                    tint = ZulvazaOrange,
-                                                    modifier = Modifier.size(18.dp)
-                                                )
-                                                Spacer(modifier = Modifier.width(3.dp))
-                                                Text(
-                                                    text = if (showInlineVideoPlayer) "Hide" else "Play",
-                                                    color = ZulvazaOrange
-                                                )
+                                                Box(contentAlignment = Alignment.Center) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.PlayArrow,
+                                                        contentDescription = if (showInlineVideoPlayer) "Hide video player" else "Play product video",
+                                                        tint = Color.White,
+                                                        modifier = Modifier.size(22.dp)
+                                                    )
+                                                }
                                             }
                                         }
-                                        IconButton(
-                                            onClick = {
-                                                videoPath = null
-                                                selectedVideoUri = null
-                                                showInlineVideoPlayer = false
-                                            },
-                                            enabled = !isUploadingMedia
-                                        ) {
-                                            Icon(
-                                                Icons.Default.DeleteOutline,
-                                                contentDescription = "Remove video",
-                                                tint = ErrorRed,
-                                                modifier = Modifier.size(20.dp)
-                                            )
-                                        }
+                                    }
+                                    Surface(
+                                        color = if (videoPath != null) SuccessGreen else ZulvazaOrange,
+                                        shape = RoundedCornerShape(bottomEnd = 10.dp),
+                                        modifier = Modifier.align(Alignment.TopStart)
+                                    ) {
+                                        Text(
+                                            text = "Video",
+                                            color = Color.White,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            videoPath = null
+                                            selectedVideoUri = null
+                                            showInlineVideoPlayer = false
+                                        },
+                                        enabled = !isUploadingMedia,
+                                        modifier = Modifier
+                                            .align(Alignment.TopEnd)
+                                            .padding(4.dp)
+                                            .size(24.dp)
+                                            .background(Color.Black.copy(alpha = 0.65f), CircleShape)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Close,
+                                            contentDescription = "Remove video",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(14.dp)
+                                        )
                                     }
                                 }
+                            }
+                        }
 
-                                AnimatedVisibility(visible = showInlineVideoPlayer && !activeVideoPlayUrl.isNullOrBlank()) {
-                                    Column {
-                                        Spacer(modifier = Modifier.height(10.dp))
-                                        if (!activeVideoPlayUrl.isNullOrBlank()) {
-                                            ProductVideoPlayer(videoUrl = activeVideoPlayUrl)
-                                        }
-                                    }
+                        AnimatedVisibility(visible = showInlineVideoPlayer && !activeVideoPlayUrl.isNullOrBlank()) {
+                            Column {
+                                Spacer(modifier = Modifier.height(12.dp))
+                                if (!activeVideoPlayUrl.isNullOrBlank()) {
+                                    ProductVideoPlayer(videoUrl = activeVideoPlayUrl)
                                 }
                             }
                         }
                     } else if (!isUploadingMedia) {
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(14.dp))
-                                .background(
-                                    Brush.linearGradient(listOf(ZulvazaNavy.copy(alpha = 0.06f), ZulvazaOrange.copy(alpha = 0.08f)))
-                                )
-                                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(14.dp))
-                                .clickable {
-                                    unifiedMediaPicker.launch(
-                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
-                                    )
-                                }
-                                .padding(horizontal = 14.dp, vertical = 12.dp)
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.PlayCircle, contentDescription = null, tint = ZulvazaOrange, modifier = Modifier.size(22.dp))
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Text(
-                                    text = "Select at least 2 photos & 1 short product video together from above.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Select 2+ photos & 1 short product video using the button above.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             }

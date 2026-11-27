@@ -6,6 +6,12 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
@@ -88,6 +94,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusEvent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -525,6 +532,9 @@ fun VerificationScreen(
             when (step) {
                 // ================= STEP 1: CNIC CARD SCAN =================
                 1 -> {
+                    val hasCnicFront = cnicFrontPath.isNotBlank() || localFrontBytes != null
+                    val hasCnicBack = cnicBackPath.isNotBlank() || localBackBytes != null
+
                     Card(
                         shape = RoundedCornerShape(22.dp),
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -533,33 +543,57 @@ fun VerificationScreen(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Column(modifier = Modifier.padding(18.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Surface(
-                                    shape = CircleShape,
-                                    color = ZulvazaOrange.copy(alpha = 0.14f),
-                                    modifier = Modifier.size(44.dp)
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Icon(
-                                            imageVector = Icons.Default.DocumentScanner,
-                                            contentDescription = null,
-                                            tint = ZulvazaOrange,
-                                            modifier = Modifier.size(22.dp)
-                                        )
-                                    }
-                                }
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text("Scan Your Physical CNIC", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                                    Text(
-                                        "Camera scans Front side first, flips automatically to scan Back side, and crops strictly to the card border.",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
+                            Text(
+                                text = "Verify Your Identity",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Scan the Front and Back of your CNIC card.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
 
                             Spacer(modifier = Modifier.height(16.dp))
+
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                CnicStepPreviewTile(
+                                    title = "Front",
+                                    isFrontCard = true,
+                                    localBytes = localFrontBytes,
+                                    signedUrl = resolveDocUrl(cnicFrontPath),
+                                    hasPath = hasCnicFront,
+                                    isUploading = isUploadingCnic,
+                                    onRescan = {
+                                        cnicRescanStartSide = "Front"
+                                        showDualCnicScanner = true
+                                    },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("capture_cnic_front")
+                                )
+                                CnicStepPreviewTile(
+                                    title = "Back",
+                                    isFrontCard = false,
+                                    localBytes = localBackBytes,
+                                    signedUrl = resolveDocUrl(cnicBackPath),
+                                    hasPath = hasCnicBack,
+                                    isUploading = isUploadingCnic,
+                                    onRescan = {
+                                        cnicRescanStartSide = "Back"
+                                        showDualCnicScanner = true
+                                    },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("capture_cnic_back")
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(18.dp))
 
                             Button(
                                 onClick = {
@@ -580,109 +614,19 @@ fun VerificationScreen(
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text("Uploading Scanned CNIC...", maxLines = 1)
                                 } else {
-                                    Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(20.dp))
+                                    Icon(
+                                        painter = painterResource(id = R.drawable.ic_id_card_scan),
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(22.dp)
+                                    )
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
-                                        text = if (cnicFrontPath.isNotBlank() && cnicBackPath.isNotBlank()) "Rescan Both Sides" else "Scan CNIC Card",
+                                        text = if (hasCnicFront && hasCnicBack) "RESCAN ID CARD" else "SCAN ID CARD",
                                         style = MaterialTheme.typography.titleMedium,
                                         fontWeight = FontWeight.Bold,
                                         maxLines = 1
                                     )
-                                }
-                            }
-
-                            if (cnicFrontPath.isNotBlank() || cnicBackPath.isNotBlank() || localFrontBytes != null || localBackBytes != null) {
-                                Spacer(modifier = Modifier.height(16.dp))
-                                Row(
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    CnicStepPreviewTile(
-                                        title = "CNIC Front",
-                                        localBytes = localFrontBytes,
-                                        signedUrl = resolveDocUrl(cnicFrontPath),
-                                        hasPath = cnicFrontPath.isNotBlank(),
-                                        isUploading = isUploadingCnic,
-                                        onRescan = {
-                                            cnicRescanStartSide = "Front"
-                                            showDualCnicScanner = true
-                                        },
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .testTag("capture_cnic_front")
-                                    )
-                                    CnicStepPreviewTile(
-                                        title = "CNIC Back",
-                                        localBytes = localBackBytes,
-                                        signedUrl = resolveDocUrl(cnicBackPath),
-                                        hasPath = cnicBackPath.isNotBlank(),
-                                        isUploading = isUploadingCnic,
-                                        onRescan = {
-                                            cnicRescanStartSide = "Back"
-                                            showDualCnicScanner = true
-                                        },
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .testTag("capture_cnic_back")
-                                    )
-                                }
-                            }
-                            if (cnicFrontPath.isNotBlank() && cnicBackPath.isNotBlank() && !isUploadingCnic) {
-                                Spacer(modifier = Modifier.height(12.dp))
-                                Surface(
-                                    color = if (cnicOcrState.status == CnicOcrStatus.COMPLETED) {
-                                        SuccessGreen.copy(alpha = 0.10f)
-                                    } else {
-                                        ZulvazaOrange.copy(alpha = 0.10f)
-                                    },
-                                    shape = RoundedCornerShape(12.dp),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        if (cnicOcrState.status == CnicOcrStatus.PROCESSING) {
-                                            CircularProgressIndicator(
-                                                modifier = Modifier.size(16.dp),
-                                                strokeWidth = 2.dp,
-                                                color = ZulvazaOrange
-                                            )
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text(
-                                                text = "Running CNIC text OCR in the background — you can continue.",
-                                                style = MaterialTheme.typography.labelMedium,
-                                                color = ZulvazaOrange
-                                            )
-                                        } else if (cnicOcrState.status == CnicOcrStatus.COMPLETED) {
-                                            Icon(
-                                                imageVector = Icons.Default.CheckCircle,
-                                                contentDescription = null,
-                                                tint = SuccessGreen,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text(
-                                                text = "Background CNIC OCR & card check completed.",
-                                                style = MaterialTheme.typography.labelMedium,
-                                                color = SuccessGreen,
-                                                fontWeight = FontWeight.SemiBold
-                                            )
-                                        } else {
-                                            Icon(
-                                                imageVector = Icons.Default.CheckCircle,
-                                                contentDescription = null,
-                                                tint = SuccessGreen,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text(
-                                                text = "Both CNIC sides uploaded cleanly.",
-                                                style = MaterialTheme.typography.labelMedium,
-                                                color = SuccessGreen
-                                            )
-                                        }
-                                    }
                                 }
                             }
                         }
@@ -692,8 +636,8 @@ fun VerificationScreen(
                         cnicBackPath.isNotBlank() &&
                         !isUploadingCnic
 
-                    Spacer(modifier = Modifier.height(18.dp))
                     if (cnicReadyToContinue) {
+                        Spacer(modifier = Modifier.height(18.dp))
                         Button(
                             onClick = { step = 2 },
                             shape = RoundedCornerShape(16.dp),
@@ -707,25 +651,6 @@ fun VerificationScreen(
                                 style = MaterialTheme.typography.titleMedium,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    } else {
-                        Surface(
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                            shape = RoundedCornerShape(14.dp),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                text = if (isUploadingCnic) {
-                                    "Uploading cropped CNIC images to server..."
-                                } else {
-                                    "Scan both Front & Back sides of your CNIC card to unlock Next."
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)
                             )
                         }
                     }
@@ -814,14 +739,14 @@ fun VerificationScreen(
                                 }
                                 Spacer(modifier = Modifier.height(14.dp))
                                 Text(
-                                    text = "Live 5-Step Face Verification",
+                                    text = "Face Verification",
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold,
                                     textAlign = TextAlign.Center
                                 )
                                 Spacer(modifier = Modifier.height(6.dp))
                                 Text(
-                                    text = "Look straight, then follow voice & screen prompts to turn Left, Right, Up, and Down inside the green oval.",
+                                    text = "Verify your identity with a quick straight-ahead face scan.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     textAlign = TextAlign.Center
@@ -1791,6 +1716,7 @@ private fun DateSelectorField(
 @Composable
 private fun CnicStepPreviewTile(
     title: String,
+    isFrontCard: Boolean,
     localBytes: ByteArray?,
     signedUrl: String?,
     hasPath: Boolean,
@@ -1801,19 +1727,32 @@ private fun CnicStepPreviewTile(
     val localBmp = remember(localBytes) {
         localBytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
     }
+    val hasCapturedImage = localBmp != null || (hasPath && !signedUrl.isNullOrBlank())
+    val pulseInfinite = rememberInfiniteTransition(label = "cnicPlaceholderPulse_$title")
+    val shimmerAlpha by pulseInfinite.animateFloat(
+        initialValue = 0.5f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1400, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "cnicPulse"
+    )
     Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
         Surface(
-            shape = RoundedCornerShape(14.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+            shape = RoundedCornerShape(16.dp),
+            color = if (hasCapturedImage) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+            else ZulvazaNavy.copy(alpha = 0.05f),
+            shadowElevation = if (hasCapturedImage) 2.dp else 0.dp,
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(85.6f / 54f)
                 .border(
                     width = 1.5.dp,
-                    color = if (hasPath || localBmp != null) SuccessGreen else ZulvazaOrange.copy(alpha = 0.6f),
-                    shape = RoundedCornerShape(14.dp)
+                    color = if (hasCapturedImage) SuccessGreen else ZulvazaOrange.copy(alpha = 0.55f * shimmerAlpha),
+                    shape = RoundedCornerShape(16.dp)
                 )
-                .clip(RoundedCornerShape(14.dp))
+                .clip(RoundedCornerShape(16.dp))
                 .clickable(enabled = !isUploading, onClick = onRescan)
         ) {
             Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
@@ -1837,10 +1776,131 @@ private fun CnicStepPreviewTile(
                         )
                     }
                     else -> {
-                        Icon(Icons.Default.Badge, contentDescription = null, tint = ZulvazaOrange)
+                        // Crisp Front / Back CNIC vector mockup placeholder
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth(0.55f)
+                                        .height(6.dp)
+                                        .clip(CircleShape)
+                                        .background(ZulvazaOrange.copy(alpha = 0.35f * shimmerAlpha))
+                                )
+                                Surface(
+                                    color = ZulvazaOrange.copy(alpha = 0.16f),
+                                    shape = RoundedCornerShape(6.dp)
+                                ) {
+                                    Text(
+                                        text = title.uppercase(Locale.US),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = ZulvazaOrange,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                            if (isFrontCard) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = ZulvazaNavy.copy(alpha = 0.12f),
+                                        modifier = Modifier.size(width = 30.dp, height = 34.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                imageVector = Icons.Default.Person,
+                                                contentDescription = null,
+                                                tint = ZulvazaNavy.copy(alpha = 0.55f),
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
+                                    Column(
+                                        modifier = Modifier.weight(1f),
+                                        verticalArrangement = Arrangement.spacedBy(5.dp)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth(0.85f)
+                                                .height(5.dp)
+                                                .clip(CircleShape)
+                                                .background(ZulvazaNavy.copy(alpha = 0.16f))
+                                        )
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth(0.65f)
+                                                .height(5.dp)
+                                                .clip(CircleShape)
+                                                .background(ZulvazaNavy.copy(alpha = 0.12f))
+                                        )
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth(0.9f)
+                                                .height(5.dp)
+                                                .clip(CircleShape)
+                                                .background(ZulvazaOrange.copy(alpha = 0.24f))
+                                        )
+                                    }
+                                }
+                            } else {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(
+                                        modifier = Modifier.weight(1f),
+                                        verticalArrangement = Arrangement.spacedBy(5.dp)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth(0.85f)
+                                                .height(5.dp)
+                                                .clip(CircleShape)
+                                                .background(ZulvazaNavy.copy(alpha = 0.16f))
+                                        )
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth(0.60f)
+                                                .height(5.dp)
+                                                .clip(CircleShape)
+                                                .background(ZulvazaNavy.copy(alpha = 0.12f))
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = ZulvazaNavy.copy(alpha = 0.14f),
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                imageVector = Icons.Default.Badge,
+                                                contentDescription = null,
+                                                tint = ZulvazaNavy.copy(alpha = 0.55f),
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
-                if (hasPath || localBmp != null) {
+                if (hasCapturedImage) {
                     Surface(
                         color = SuccessGreen,
                         shape = CircleShape,
@@ -1860,8 +1920,14 @@ private fun CnicStepPreviewTile(
                 }
             }
         }
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(title, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-        Text("Tap to rescan", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(title, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+        if (hasCapturedImage) {
+            Text(
+                text = "Tap to rescan",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
