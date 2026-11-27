@@ -48,28 +48,42 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: Set up Android SDK tools
-        uses: android-actions/setup-android@v3
-
-      - name: Accept Android SDK licenses & install API 36.1
+      - name: Set up Android SDK & install API 36.1
         run: |
-          SDK_DIR="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          SDK_DIR="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          mkdir -p "$SDK_DIR"
+          echo "ANDROID_SDK_ROOT=$SDK_DIR" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$SDK_DIR" >> "$GITHUB_ENV"
+
+          SDKMANAGER_BIN="$SDK_DIR/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER_BIN" ]; then
+            SDKMANAGER_BIN="$(find "$SDK_DIR/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -n 1 || true)"
+          fi
+          if [ -z "$SDKMANAGER_BIN" ] || [ ! -x "$SDKMANAGER_BIN" ]; then
+            echo "sdkmanager not found locally; installing Android cmdline-tools..."
+            mkdir -p "$SDK_DIR/cmdline-tools"
+            curl -fsSL "https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip" -o /tmp/cmdline-tools.zip
+            unzip -q /tmp/cmdline-tools.zip -d /tmp/cmdline-unpack
+            rm -rf "$SDK_DIR/cmdline-tools/latest"
+            mv /tmp/cmdline-unpack/cmdline-tools "$SDK_DIR/cmdline-tools/latest"
+            rm -rf /tmp/cmdline-tools.zip /tmp/cmdline-unpack
+            SDKMANAGER_BIN="$SDK_DIR/cmdline-tools/latest/bin/sdkmanager"
+          fi
+
+          echo "$(dirname "$SDKMANAGER_BIN")" >> "$GITHUB_PATH"
+          echo "$SDK_DIR/platform-tools" >> "$GITHUB_PATH"
+          echo "Using preinstalled sdkmanager: $SDKMANAGER_BIN"
+
           mkdir -p "$SDK_DIR/licenses"
           printf "\n24333f8a63b6825ea9c5514f83c2829b004d1fee\n8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e" > "$SDK_DIR/licenses/android-sdk-license"
           printf "\n84831b9409646a918e30573bab4c9c91346d8abd" > "$SDK_DIR/licenses/android-sdk-preview-license"
           printf "\n601085b94cd77f0b54ff86406957099ebe79c4d6" > "$SDK_DIR/licenses/android-googletv-license"
           printf "\n33b6a2b64607f11b759f320ef9dff4ae5c47d97a" > "$SDK_DIR/licenses/google-gdk-license"
           printf "\ne9acab5b5fbb560a72cfaecce8946896ff6aab9d" > "$SDK_DIR/licenses/intel-android-extra-license"
-          SDKMANAGER_BIN="$SDK_DIR/cmdline-tools/latest/bin/sdkmanager"
-          if [ ! -x "$SDKMANAGER_BIN" ]; then
-            SDKMANAGER_BIN="$(find "$SDK_DIR/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -n 1)"
-          fi
-          if [ -z "$SDKMANAGER_BIN" ]; then
-            SDKMANAGER_BIN="$(command -v sdkmanager || true)"
-          fi
-          echo "Using sdkmanager: $SDKMANAGER_BIN"
+
           { yes || true; } | "$SDKMANAGER_BIN" --sdk_root="$SDK_DIR" --licenses >/dev/null 2>&1 || true
-          { yes || true; } | "$SDKMANAGER_BIN" --sdk_root="$SDK_DIR" --install "platform-tools" "build-tools;36.0.0" "platforms;android-36.1"
+          { yes || true; } | "$SDKMANAGER_BIN" --sdk_root="$SDK_DIR" --install "platform-tools" "build-tools;36.0.0" "platforms;android-36"
+          { yes || true; } | "$SDKMANAGER_BIN" --sdk_root="$SDK_DIR" --install "platforms;android-36.1" || true
           ls -la "$SDK_DIR/platforms" "$SDK_DIR/build-tools"
 
       - name: Set up Gradle 9.3.1

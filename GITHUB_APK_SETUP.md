@@ -11,7 +11,8 @@ Run this on your computer (with Java JDK installed):
 
 ```bash
 keytool -genkeypair -v -keystore my-upload-key.jks \
-  -alias upload -keyalg RSA -keysize 2048 -validity 10000
+  -alias upload -keyalg RSA -keysize 2048 -validity 10000 \
+  -dname "CN=ZULVAZA, OU=ZULVAZA, O=ZULVAZA, L=Quetta, ST=Balochistan, C=PK"
 ```
 
 Then convert the `.jks` file to a single-line Base64 string:
